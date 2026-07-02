@@ -6,12 +6,14 @@
 // Register in the card picker immediately; the element definition below
 // waits until the Home Assistant frontend provides a Lit base class.
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "heishamon-scheduler-card",
-  name: "HeishaMon Scheduler",
-  description: "Visueller Wochenplan für Panasonic Wärmepumpen via HeishaMon",
-  preview: true,
-});
+if (!window.customCards.some((c) => c.type === "heishamon-scheduler-card")) {
+  window.customCards.push({
+    type: "heishamon-scheduler-card",
+    name: "HeishaMon Scheduler",
+    description: "Visueller Wochenplan für Panasonic Wärmepumpen via HeishaMon",
+    preview: true,
+  });
+}
 
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 
@@ -691,14 +693,16 @@ class HeishaMonSchedulerCardEditor extends LitElement {
   }
 }
 
-customElements.define(
-  "heishamon-scheduler-card",
-  HeishaMonSchedulerCard
-);
-customElements.define(
-  "heishamon-scheduler-card-editor",
-  HeishaMonSchedulerCardEditor
-);
+if (!customElements.get("heishamon-scheduler-card")) {
+  customElements.define(
+    "heishamon-scheduler-card",
+    HeishaMonSchedulerCard
+  );
+  customElements.define(
+    "heishamon-scheduler-card-editor",
+    HeishaMonSchedulerCardEditor
+  );
+}
 
 })().catch((e) =>
   console.error("heishamon-scheduler-card failed to initialize:", e)

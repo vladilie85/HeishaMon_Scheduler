@@ -1,9 +1,9 @@
 {
   "domain": "heishamon_scheduler",
   "name": "HeishaMon Scheduler",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "documentation": "https://github.com/vladilie85/heishamon-scheduler",
-  "dependencies": ["http", "lovelace", "mqtt"],
+  "dependencies": ["frontend", "http", "mqtt"],
   "codeowners": [],
   "config_flow": true,
   "iot_class": "local_push",

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import voluptuous as vol
 
+from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -29,7 +30,12 @@ CARD_URL = f"/{DOMAIN}/{CARD_FILENAME}"
 
 
 async def _async_register_card(hass: HomeAssistant) -> None:
-    """Serve the bundled Lovelace card and add it as a dashboard resource."""
+    """Serve the bundled Lovelace card and load it on every frontend page.
+
+    add_extra_js_url injects the module on all dashboards regardless of
+    storage/YAML mode, so no Lovelace resource entry is needed. The card
+    guards against double definition in case a manual resource exists too.
+    """
     if hass.data.get(f"{DOMAIN}_card_registered"):
         return
     hass.data[f"{DOMAIN}_card_registered"] = True
@@ -38,35 +44,8 @@ async def _async_register_card(hass: HomeAssistant) -> None:
     await hass.http.async_register_static_paths(
         [StaticPathConfig(CARD_URL, str(card_path), cache_headers=False)]
     )
-
-    # Auto-add the Lovelace resource (storage mode only; YAML-mode users
-    # must reference the card manually)
-    versioned_url = f"{CARD_URL}?v={VERSION}"
-    try:
-        lovelace = hass.data.get("lovelace")
-        resources = getattr(lovelace, "resources", None)
-        if resources is None or getattr(lovelace, "mode", None) != "storage":
-            _LOGGER.debug("Lovelace not in storage mode, skipping resource setup")
-            return
-        if not resources.loaded:
-            await resources.async_load()
-            resources.loaded = True
-        for item in resources.async_items():
-            if item["url"].split("?")[0] == CARD_URL:
-                if item["url"] != versioned_url:
-                    await resources.async_update_item(
-                        item["id"], {"url": versioned_url}
-                    )
-                return
-        await resources.async_create_item(
-            {"res_type": "module", "url": versioned_url}
-        )
-        _LOGGER.info("Registered Lovelace resource %s", versioned_url)
-    except Exception:
-        _LOGGER.exception(
-            "Could not register the card as a Lovelace resource; add %s manually",
-            CARD_URL,
-        )
+    add_extra_js_url(hass, f"{CARD_URL}?v={VERSION}")
+    _LOGGER.debug("Registered card frontend module %s (v%s)", CARD_URL, VERSION)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
