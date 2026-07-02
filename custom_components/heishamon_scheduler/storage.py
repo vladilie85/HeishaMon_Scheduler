@@ -96,8 +96,10 @@ class ScheduleStore:
         current_time = now.strftime("%H:%M")
         weekday_idx = now.weekday()  # 0=Monday
 
-        # Check up to 7 days back (current day + 6 previous)
-        for offset in range(7):
+        # Check up to 7 days back; offset 7 wraps to the same weekday of
+        # the previous week so times before a day's first entry inherit
+        # the schedule instead of resolving to None
+        for offset in range(8):
             day_idx = (weekday_idx - offset) % 7
             day_key = DAYS[day_idx]
             entries = days_data.get(day_key, [])

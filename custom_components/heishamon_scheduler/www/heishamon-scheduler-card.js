@@ -107,35 +107,54 @@ class HeishaMonSchedulerCard extends LitElement {
       table {
         border-collapse: collapse;
         width: 100%;
-        min-width: 700px;
+        min-width: 640px;
         user-select: none;
+        touch-action: none;
       }
       th {
         font-size: 0.7em;
         font-weight: 400;
         color: var(--secondary-text-color);
-        padding: 2px 0;
-        min-width: 14px;
-        text-align: center;
+        padding: 2px 0 4px 3px;
+        min-width: 13px;
+        text-align: left;
       }
       th.day-label {
-        font-size: 0.85em;
+        font-size: 0.8em;
         font-weight: 500;
         text-align: left;
-        padding-right: 8px;
+        padding: 0 10px 0 0;
         color: var(--primary-text-color);
-        min-width: 30px;
+        min-width: 34px;
+        position: sticky;
+        left: 0;
+        z-index: 3;
+        background: var(--card-background-color, #fff);
       }
       td.cell {
-        height: 32px;
-        min-width: 14px;
+        height: 26px;
+        min-width: 13px;
         cursor: pointer;
-        border: 1px solid var(--divider-color, #e0e0e0);
+        border: none;
+        border-top: 3px solid var(--card-background-color, #fff);
+        background-clip: padding-box;
         transition: opacity 0.15s;
         position: relative;
       }
+      td.cell.empty {
+        background-color: var(--secondary-background-color, #f0f0f0);
+      }
+      td.cell.h3 {
+        box-shadow: inset -1px 0 0 var(--card-background-color, #fff);
+      }
+      td.cell.slot-first {
+        border-radius: 6px 0 0 6px;
+      }
+      td.cell.slot-last {
+        border-radius: 0 6px 6px 0;
+      }
       td.cell:hover {
-        opacity: 0.8;
+        opacity: 0.75;
         outline: 2px solid var(--primary-color, #03a9f4);
         outline-offset: -2px;
         z-index: 1;
@@ -218,6 +237,12 @@ class HeishaMonSchedulerCard extends LitElement {
         border-radius: 2px;
         border: 1px solid var(--divider-color);
       }
+      .legend-gradient {
+        width: 140px;
+        height: 10px;
+        border-radius: 5px;
+        align-self: center;
+      }
       .hour-markers th {
         border-bottom: 1px solid var(--divider-color, #e0e0e0);
       }
@@ -296,12 +321,16 @@ class HeishaMonSchedulerCard extends LitElement {
     if (ch.value_type === "number") {
       const min = ch.min ?? 0;
       const max = ch.max ?? 100;
-      const ratio = (value - min) / (max - min);
-      // Blue (cold) to Red (hot)
-      const r = Math.round(40 + ratio * 200);
-      const g = Math.round(80 + (1 - Math.abs(ratio - 0.5) * 2) * 80);
-      const b = Math.round(220 - ratio * 180);
-      return `rgb(${r}, ${g}, ${b})`;
+      const ratio = Math.min(1, Math.max(0, (value - min) / (max - min)));
+      // Blue (low) -> neutral grey (middle) -> orange-red (high)
+      const lerp = (a, b, t) => a.map((x, i) => Math.round(x + (b[i] - x) * t));
+      const low = [66, 133, 244];
+      const mid = [158, 167, 173];
+      const high = [234, 88, 54];
+      const rgb = ratio < 0.5
+        ? lerp(low, mid, ratio * 2)
+        : lerp(mid, high, (ratio - 0.5) * 2);
+      return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
     }
 
     // Enum: distinct colors
@@ -321,10 +350,13 @@ class HeishaMonSchedulerCard extends LitElement {
 
     const slotTime = HOURS[slotIndex];
 
-    // Find value: walk backward through current day, then previous days
+    // Find value: walk backward through current day, then previous days.
+    // Offset 7 wraps to the same weekday of the previous week so slots
+    // before a day's first entry inherit the schedule instead of showing
+    // as empty.
     const dayIdx = DAYS.indexOf(day);
 
-    for (let offset = 0; offset < 7; offset++) {
+    for (let offset = 0; offset < 8; offset++) {
       const checkDayIdx = (dayIdx - offset + 7) % 7;
       const checkDay = DAYS[checkDayIdx];
       const entries = channel.days[checkDay] || [];
@@ -354,10 +386,15 @@ class HeishaMonSchedulerCard extends LitElement {
 
   _onCellMouseDown(day, slotIndex, e) {
     e.preventDefault();
+    // Release implicit pointer capture so pointerenter fires on
+    // neighbouring cells while dragging (relevant for touch)
+    if (e.target.hasPointerCapture?.(e.pointerId)) {
+      e.target.releasePointerCapture(e.pointerId);
+    }
     this._isDragging = true;
     this._dragStart = { day, slotIndex };
     this._applyValueToSlot(day, slotIndex, this._editValue);
-    document.addEventListener("mouseup", this._boundMouseUp);
+    document.addEventListener("pointerup", this._boundMouseUp);
   }
 
   _onCellMouseEnter(day, slotIndex) {
@@ -370,7 +407,7 @@ class HeishaMonSchedulerCard extends LitElement {
       this._isDragging = false;
       this._saveSchedule();
     }
-    document.removeEventListener("mouseup", this._boundMouseUp);
+    document.removeEventListener("pointerup", this._boundMouseUp);
   }
 
   _applyValueToSlot(day, slotIndex, value) {
@@ -544,20 +581,17 @@ class HeishaMonSchedulerCard extends LitElement {
     }
 
     if (ch.value_type === "number") {
-      const steps = [ch.min, Math.round((ch.min + ch.max) / 2), ch.max];
+      const mid = Math.round((ch.min + ch.max) / 2);
+      const gradient = `linear-gradient(to right, ${this._getColor(
+        this._activeChannel, ch.min
+      )}, ${this._getColor(this._activeChannel, mid)}, ${this._getColor(
+        this._activeChannel, ch.max
+      )})`;
       return html`
         <div class="legend">
-          ${steps.map(
-            (val) => html`
-              <div class="legend-item">
-                <div
-                  class="legend-swatch"
-                  style="background: ${this._getColor(this._activeChannel, val)}"
-                ></div>
-                ${val}${ch.unit || ""}
-              </div>
-            `
-          )}
+          <div class="legend-item">${ch.min}${ch.unit || ""}</div>
+          <div class="legend-gradient" style="background: ${gradient}"></div>
+          <div class="legend-item">${ch.max}${ch.unit || ""}</div>
         </div>
       `;
     }
@@ -621,8 +655,8 @@ class HeishaMonSchedulerCard extends LitElement {
             <thead>
               <tr class="hour-markers">
                 <th class="day-label"></th>
-                ${Array.from({ length: 24 }, (_, h) => html`
-                  <th colspan="2">${String(h).padStart(2, "0")}</th>
+                ${Array.from({ length: 8 }, (_, i) => html`
+                  <th colspan="6">${String(i * 3).padStart(2, "0")}</th>
                 `)}
               </tr>
             </thead>
@@ -634,16 +668,24 @@ class HeishaMonSchedulerCard extends LitElement {
                     ${HOURS.map((_, slotIdx) => {
                       const value = this._getValueAtSlot(day, slotIdx);
                       const isNow = dayIdx === now.dayIdx && slotIdx === now.slotIdx;
+                      const classes = [
+                        "cell",
+                        isNow ? "now-marker" : "",
+                        value === null ? "empty" : "",
+                        slotIdx % 6 === 5 ? "h3" : "",
+                        slotIdx === 0 ? "slot-first" : "",
+                        slotIdx === HOURS.length - 1 ? "slot-last" : "",
+                      ].join(" ");
                       const color = value !== null
                         ? this._getColor(this._activeChannel, value)
-                        : "transparent";
+                        : "";
                       return html`
                         <td
-                          class="cell ${isNow ? "now-marker" : ""}"
-                          style="background: ${color}"
+                          class="${classes}"
+                          style="${color ? `background-color: ${color}` : ""}"
                           title="${this._dayLabels[day]} ${HOURS[slotIdx]}: ${value !== null ? value : "-"}"
-                          @mousedown="${(e) => this._onCellMouseDown(day, slotIdx, e)}"
-                          @mouseenter="${() => this._onCellMouseEnter(day, slotIdx)}"
+                          @pointerdown="${(e) => this._onCellMouseDown(day, slotIdx, e)}"
+                          @pointerenter="${() => this._onCellMouseEnter(day, slotIdx)}"
                         ></td>
                       `;
                     })}

@@ -315,9 +315,10 @@ class ScheduleCoordinator:
 
         days_data = channel["days"]
 
-        # Look through next 7 days
+        # Look through the next 7 days; offset 7 wraps to the same weekday
+        # of the next week (relevant when only one day has entries)
         from .const import DAYS
-        for offset in range(7):
+        for offset in range(8):
             day_idx = (weekday_idx + offset) % 7
             day_key = DAYS[day_idx]
             entries = days_data.get(day_key, [])
