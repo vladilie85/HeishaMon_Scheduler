@@ -277,6 +277,11 @@ class HeishaMonSchedulerCard extends LitElement {
         gap: 18px;
         padding: 10px 16px 2px;
         align-items: center;
+        justify-content: space-between;
+      }
+      .toolbar-hint {
+        font-size: 0.8em;
+        color: var(--secondary-text-color);
       }
       .icon-btn {
         display: flex;
@@ -550,21 +555,6 @@ class HeishaMonSchedulerCard extends LitElement {
     this.requestUpdate();
   }
 
-  _addBlock() {
-    const blocks = this._tabBlocks();
-    const gaps = [];
-    let cursor = 0;
-    for (const b of blocks) {
-      if (t2m(b.start) - cursor >= 30) gaps.push([cursor, t2m(b.start)]);
-      cursor = Math.max(cursor, t2m(b.end));
-    }
-    if (1440 - cursor >= 30) gaps.push([cursor, 1440]);
-    if (!gaps.length) return;
-
-    const gap = gaps.reduce((a, g) => (g[1] - g[0] > a[1] - a[0] ? g : a));
-    this._createBlockAt(gap[0], Math.min(gap[0] + 120, gap[1]));
-  }
-
   _onTrackClick(e) {
     // Only clicks on the empty track, not on blocks or handles
     if (e.target !== e.currentTarget) return;
@@ -756,9 +746,9 @@ class HeishaMonSchedulerCard extends LitElement {
       </div>
       ${blocks.length === 0
         ? html`<div class="hint">
-            Noch keine Zeitblöcke für diese Tage — auf eine freie Stelle in
-            der Zeitleiste tippen oder „Hinzufügen“ nutzen. Außerhalb der
-            Blöcke gelten die HeishaMon-Einstellungen.
+            Noch keine Zeitblöcke für diese Tage — einfach auf eine freie
+            Stelle in der Zeitleiste tippen. Außerhalb der Blöcke gelten
+            die HeishaMon-Einstellungen.
           </div>`
         : ""}
     `;
@@ -884,9 +874,9 @@ class HeishaMonSchedulerCard extends LitElement {
         ${this._renderTimeline()}
 
         <div class="toolbar">
-          <button class="icon-btn" @click="${this._addBlock}">
-            <span class="circle">+</span> Hinzufügen
-          </button>
+          <span class="toolbar-hint">
+            Klick auf eine freie Stelle im Zeitstrahl fügt einen Block hinzu
+          </span>
           <button
             class="icon-btn"
             ?disabled="${!this._selectedId}"
