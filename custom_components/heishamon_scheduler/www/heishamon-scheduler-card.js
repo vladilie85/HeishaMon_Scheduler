@@ -3,11 +3,15 @@
  * Custom Lovelace card for Home Assistant
  */
 
-const LitElement = customElements.get("hui-masonry-view")
-  ? Object.getPrototypeOf(customElements.get("hui-masonry-view"))
-  : Object.getPrototypeOf(customElements.get("hui-view"));
-const html = LitElement.prototype.html;
-const css = LitElement.prototype.css;
+// Register in the card picker immediately; the element definition below
+// waits until the Home Assistant frontend provides a Lit base class.
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: "heishamon-scheduler-card",
+  name: "HeishaMon Scheduler",
+  description: "Visueller Wochenplan für Panasonic Wärmepumpen via HeishaMon",
+  preview: true,
+});
 
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 
@@ -25,6 +29,23 @@ const HOURS = Array.from({ length: 48 }, (_, i) => {
   const m = i % 2 === 0 ? "00" : "30";
   return `${String(h).padStart(2, "0")}:${m}`;
 });
+
+(async () => {
+
+// Wait until the frontend has defined a Lit-based view element we can
+// derive LitElement/html/css from. At resource load time none of these
+// may exist yet — grabbing them eagerly kills the whole module.
+const VIEW_ELEMENTS = ["hui-view", "hui-masonry-view", "hui-sections-view"];
+if (!VIEW_ELEMENTS.some((el) => customElements.get(el))) {
+  await Promise.race(VIEW_ELEMENTS.map((el) => customElements.whenDefined(el)));
+}
+const baseElement =
+  customElements.get("hui-masonry-view") ||
+  customElements.get("hui-sections-view") ||
+  customElements.get("hui-view");
+const LitElement = Object.getPrototypeOf(baseElement);
+const html = LitElement.prototype.html;
+const css = LitElement.prototype.css;
 
 class HeishaMonSchedulerCard extends LitElement {
   static get properties() {
@@ -679,10 +700,6 @@ customElements.define(
   HeishaMonSchedulerCardEditor
 );
 
-window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "heishamon-scheduler-card",
-  name: "HeishaMon Scheduler",
-  description: "Visueller Wochenplan für Panasonic Wärmepumpen via HeishaMon",
-  preview: true,
-});
+})().catch((e) =>
+  console.error("heishamon-scheduler-card failed to initialize:", e)
+);
