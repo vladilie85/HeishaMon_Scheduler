@@ -2,118 +2,82 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from .const import DAYS, STORAGE_KEY, STORAGE_VERSION
+from .const import STORAGE_KEY, STORAGE_VERSION
 
 
-def _default_schedule() -> dict:
-    """Return an empty default schedule."""
+def _defaults() -> dict:
+    """Return the default (empty) data structure."""
     return {
-        "version": STORAGE_VERSION,
-        "schedules": {
-            "default": {
-                "name": "Standard",
-                "enabled": True,
-                "channels": {},
-            }
-        },
+        "schema": 2,
+        "enabled": True,
+        "blocks": [],
+        "baselines": {},
     }
 
 
 class ScheduleStore:
-    """Manage persistent schedule storage."""
+    """Manage persistent schedule storage.
+
+    Schema 2 stores a flat list of schedule blocks:
+        {id, days: [mon..sun], start: "HH:MM", end: "HH:MM",
+         action, value, enabled}
+    plus captured baselines per block id used to restore the heat pump
+    state when a block ends.
+    """
 
     def __init__(self, hass: HomeAssistant) -> None:
         self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
-        self.data: dict = {}
+        self.data: dict = _defaults()
 
     async def async_load(self) -> dict:
         """Load schedules from storage."""
         stored = await self._store.async_load()
-        if stored is None:
-            self.data = _default_schedule()
-        else:
-            self.data = stored
+        if stored is not None:
+            # Merge onto defaults so upgrading from schema 1 (channel
+            # based) starts with an empty block list without data loss.
+            self.data = {**_defaults(), **stored}
         return self.data
 
     async def async_save(self) -> None:
         """Save schedules to storage."""
         await self._store.async_save(self.data)
 
-    def get_schedule(self, schedule_id: str = "default") -> dict | None:
-        """Get a specific schedule."""
-        return self.data.get("schedules", {}).get(schedule_id)
+    @property
+    def enabled(self) -> bool:
+        """Return whether the schedule is enabled."""
+        return self.data.get("enabled", True)
 
-    def set_channel_day(
-        self,
-        schedule_id: str,
-        channel_id: str,
-        day: str,
-        entries: list[dict],
-    ) -> None:
-        """Set schedule entries for a specific channel and day."""
-        schedule = self.data["schedules"].setdefault(schedule_id, {
-            "name": schedule_id,
-            "enabled": True,
-            "channels": {},
-        })
-        channel = schedule["channels"].setdefault(channel_id, {
-            "enabled": True,
-            "days": {},
-        })
-        # Sort entries by time
-        channel["days"][day] = sorted(entries, key=lambda e: e["time"])
+    def set_enabled(self, enabled: bool) -> None:
+        """Enable/disable the whole schedule."""
+        self.data["enabled"] = enabled
 
-    def get_current_value(
-        self,
-        channel_id: str,
-        now: datetime,
-        schedule_id: str = "default",
-    ) -> Any | None:
-        """Resolve the effective scheduled value for a channel at a given time.
+    def get_blocks(self) -> list[dict]:
+        """Return all schedule blocks."""
+        return self.data.get("blocks", [])
 
-        Walks backward through the day's entries. If no entry is found before
-        the current time, wraps to the previous day's last entry, continuing
-        up to 7 days back.
-        """
-        schedule = self.get_schedule(schedule_id)
-        if schedule is None or not schedule.get("enabled", True):
-            return None
+    def set_blocks(self, blocks: list[dict]) -> None:
+        """Replace the block list."""
+        self.data["blocks"] = blocks
+        # Drop baselines of deleted blocks
+        ids = {b["id"] for b in blocks}
+        self.data["baselines"] = {
+            bid: val for bid, val in self.data.get("baselines", {}).items()
+            if bid in ids
+        }
 
-        channel = schedule.get("channels", {}).get(channel_id)
-        if channel is None or not channel.get("enabled", True):
-            return None
+    def get_baseline(self, block_id: str) -> Any | None:
+        """Return the captured pre-block state for a block."""
+        return self.data.get("baselines", {}).get(block_id)
 
-        days_data = channel.get("days", {})
-        if not days_data:
-            return None
+    def set_baseline(self, block_id: str, value: Any) -> None:
+        """Store the captured pre-block state for a block."""
+        self.data.setdefault("baselines", {})[block_id] = value
 
-        current_time = now.strftime("%H:%M")
-        weekday_idx = now.weekday()  # 0=Monday
-
-        # Check up to 7 days back; offset 7 wraps to the same weekday of
-        # the previous week so times before a day's first entry inherit
-        # the schedule instead of resolving to None
-        for offset in range(8):
-            day_idx = (weekday_idx - offset) % 7
-            day_key = DAYS[day_idx]
-            entries = days_data.get(day_key, [])
-
-            if not entries:
-                continue
-
-            if offset == 0:
-                # Current day: find last entry at or before current time
-                candidates = [e for e in entries if e["time"] <= current_time]
-                if candidates:
-                    return candidates[-1]["value"]
-            else:
-                # Previous days: take the last entry of the day
-                return entries[-1]["value"]
-
-        return None
+    def pop_baseline(self, block_id: str) -> Any | None:
+        """Remove and return the captured pre-block state."""
+        return self.data.get("baselines", {}).pop(block_id, None)

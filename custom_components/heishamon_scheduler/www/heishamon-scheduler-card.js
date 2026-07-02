@@ -1,5 +1,5 @@
 /**
- * HeishaMon Scheduler Card - Visual weekly schedule editor
+ * HeishaMon Scheduler Card - Schedule block timeline editor
  * Custom Lovelace card for Home Assistant
  */
 
@@ -10,12 +10,35 @@ if (!window.customCards.some((c) => c.type === "heishamon-scheduler-card")) {
   window.customCards.push({
     type: "heishamon-scheduler-card",
     name: "HeishaMon Scheduler",
-    description: "Visueller Wochenplan für Panasonic Wärmepumpen via HeishaMon",
+    description: "Zeitblöcke für Panasonic Wärmepumpen via HeishaMon",
     preview: true,
   });
 }
 
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
+const DAY_PRESETS = {
+  daily: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+  workdays: ["mon", "tue", "wed", "thu", "fri"],
+  weekend: ["sat", "sun"],
+};
+
+const TAB_LABELS = {
+  daily: "Täglich",
+  workdays: "Werktage",
+  weekend: "Wochenende",
+  custom: "Individuell",
+};
+
+const ACTION_COLORS = {
+  heat: "#f59e42",
+  cool: "#4fa8f6",
+  dhw: "#26a69a",
+  off: "#90a4ae",
+  z1_shift: "#7e57c2",
+  dhw_temp: "#ec6e85",
+  quiet: "#66bb6a",
+};
 
 function localizedDayLabels(lang) {
   const fmt = new Intl.DateTimeFormat(lang || undefined, { weekday: "short" });
@@ -26,11 +49,15 @@ function localizedDayLabels(lang) {
   });
   return labels;
 }
-const HOURS = Array.from({ length: 48 }, (_, i) => {
-  const h = Math.floor(i / 2);
-  const m = i % 2 === 0 ? "00" : "30";
-  return `${String(h).padStart(2, "0")}:${m}`;
-});
+
+const t2m = (t) => {
+  const [h, m] = t.split(":").map(Number);
+  return h * 60 + m;
+};
+const m2t = (m) =>
+  `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const pct = (mins) => (mins / 1440) * 100;
 
 (async () => {
 
@@ -54,12 +81,13 @@ class HeishaMonSchedulerCard extends LitElement {
     return {
       hass: { type: Object },
       _config: { type: Object },
-      _schedule: { type: Object },
-      _channels: { type: Object },
-      _activeChannel: { type: String },
-      _editValue: { type: Number },
-      _isDragging: { type: Boolean },
-      _dragStart: { type: Object },
+      _blocks: { type: Array },
+      _actions: { type: Object },
+      _enabled: { type: Boolean },
+      _tab: { type: String },
+      _customDays: { type: Array },
+      _selectedId: { type: String },
+      _dirty: { type: Boolean },
     };
   }
 
@@ -72,181 +100,300 @@ class HeishaMonSchedulerCard extends LitElement {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 16px 16px 0;
+        padding: 16px 16px 4px;
         font-size: 1.2em;
         font-weight: 500;
       }
-      .tabs {
+      .enable-toggle {
         display: flex;
-        gap: 4px;
-        padding: 12px 16px;
-        overflow-x: auto;
-      }
-      .tab {
-        padding: 8px 16px;
-        border-radius: 20px;
-        cursor: pointer;
-        font-size: 0.9em;
-        white-space: nowrap;
-        background: var(--secondary-background-color, #e0e0e0);
-        color: var(--primary-text-color);
-        border: none;
-        transition: all 0.2s;
-      }
-      .tab.active {
-        background: var(--primary-color, #03a9f4);
-        color: white;
-      }
-      .tab:hover:not(.active) {
-        background: var(--disabled-color, #bdbdbd);
-      }
-      .schedule-grid {
-        padding: 0 16px 16px;
-        overflow-x: auto;
-      }
-      table {
-        border-collapse: collapse;
-        width: 100%;
-        min-width: 640px;
-        user-select: none;
-        touch-action: none;
-      }
-      th {
+        align-items: center;
+        gap: 6px;
         font-size: 0.7em;
         font-weight: 400;
         color: var(--secondary-text-color);
-        padding: 2px 0 4px 3px;
-        min-width: 13px;
-        text-align: left;
-      }
-      th.day-label {
-        font-size: 0.8em;
-        font-weight: 500;
-        text-align: left;
-        padding: 0 10px 0 0;
-        color: var(--primary-text-color);
-        min-width: 34px;
-        position: sticky;
-        left: 0;
-        z-index: 3;
-        background: var(--card-background-color, #fff);
-      }
-      td.cell {
-        height: 26px;
-        min-width: 13px;
         cursor: pointer;
+        user-select: none;
+      }
+      .enable-toggle input {
+        accent-color: var(--primary-color);
+        width: 18px;
+        height: 18px;
+        cursor: pointer;
+      }
+      .section-label {
+        padding: 14px 16px 6px;
+        font-size: 0.72em;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--secondary-text-color);
+      }
+      .tabs {
+        display: flex;
+        gap: 6px;
+        padding: 0 16px;
+        flex-wrap: wrap;
+      }
+      .chip {
+        padding: 7px 14px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 0.82em;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        white-space: nowrap;
+        background: transparent;
+        color: var(--primary-color, #03a9f4);
         border: none;
-        border-top: 3px solid var(--card-background-color, #fff);
-        background-clip: padding-box;
-        transition: opacity 0.15s;
+        transition: background 0.15s;
+        user-select: none;
+      }
+      .chip:hover:not(.active) {
+        background: var(--secondary-background-color, #f0f0f0);
+      }
+      .chip.active {
+        background: var(--primary-color, #03a9f4);
+        color: var(--text-primary-color, #fff);
+      }
+      .day-chips {
+        display: flex;
+        gap: 6px;
+        padding: 8px 16px 0;
+        flex-wrap: wrap;
+      }
+      .day-chip {
+        min-width: 38px;
+        padding: 6px 0;
+        border-radius: 8px;
+        border: 1px solid var(--divider-color, #e0e0e0);
+        background: transparent;
+        color: var(--primary-text-color);
+        font-size: 0.8em;
+        cursor: pointer;
+        text-align: center;
+      }
+      .day-chip.active {
+        background: var(--primary-color, #03a9f4);
+        border-color: var(--primary-color, #03a9f4);
+        color: var(--text-primary-color, #fff);
+      }
+      .timeline {
         position: relative;
+        margin: 40px 24px 4px;
       }
-      td.cell.empty {
-        background-color: var(--secondary-background-color, #f0f0f0);
+      .track {
+        position: relative;
+        height: 46px;
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--primary-color, #03a9f4) 14%, transparent);
+        touch-action: none;
       }
-      td.cell.h3 {
-        box-shadow: inset -1px 0 0 var(--card-background-color, #fff);
+      .block {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #fff;
+        font-size: 0.85em;
+        font-weight: 600;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+        cursor: pointer;
+        overflow: hidden;
+        white-space: nowrap;
       }
-      td.cell.slot-first {
-        border-radius: 6px 0 0 6px;
-      }
-      td.cell.slot-last {
-        border-radius: 0 6px 6px 0;
-      }
-      td.cell:hover {
-        opacity: 0.75;
-        outline: 2px solid var(--primary-color, #03a9f4);
-        outline-offset: -2px;
-        z-index: 1;
-      }
-      td.cell.now-marker {
-        outline: 2px solid var(--error-color, #f44336);
-        outline-offset: -2px;
+      .block.selected {
+        box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.85),
+          0 1px 4px rgba(0, 0, 0, 0.3);
         z-index: 2;
+      }
+      .handle {
+        position: absolute;
+        top: 50%;
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        background: #fff;
+        color: #444;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+        transform: translate(-50%, -50%);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.75em;
+        font-weight: 700;
+        letter-spacing: -1px;
+        cursor: ew-resize;
+        z-index: 3;
+        touch-action: none;
+        user-select: none;
+      }
+      .bubble {
+        position: absolute;
+        top: -34px;
+        transform: translateX(-50%);
+        background: var(--primary-color, #03a9f4);
+        color: var(--text-primary-color, #fff);
+        font-size: 0.75em;
+        font-weight: 600;
+        padding: 3px 8px;
+        border-radius: 6px;
+        white-space: nowrap;
+        z-index: 4;
+        pointer-events: none;
+      }
+      .bubble::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        bottom: -4px;
+        transform: translateX(-50%);
+        border-left: 5px solid transparent;
+        border-right: 5px solid transparent;
+        border-top: 5px solid var(--primary-color, #03a9f4);
+      }
+      .now-line {
+        position: absolute;
+        top: -4px;
+        bottom: -4px;
+        width: 2px;
+        background: var(--error-color, #f44336);
+        z-index: 1;
+        pointer-events: none;
+      }
+      .axis {
+        position: relative;
+        height: 18px;
+        margin: 6px 24px 0;
+        font-size: 0.72em;
+        color: var(--secondary-text-color);
+      }
+      .axis span {
+        position: absolute;
+        transform: translateX(-50%);
       }
       .toolbar {
         display: flex;
-        gap: 8px;
-        padding: 8px 16px;
+        gap: 18px;
+        padding: 10px 16px 2px;
         align-items: center;
-        flex-wrap: wrap;
       }
-      .value-picker {
+      .icon-btn {
         display: flex;
         align-items: center;
         gap: 8px;
-        background: var(--secondary-background-color);
+        background: none;
+        border: none;
+        color: var(--primary-color, #03a9f4);
+        font-size: 0.82em;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        cursor: pointer;
+        padding: 6px 4px;
+      }
+      .icon-btn:disabled {
+        color: var(--disabled-text-color, #9e9e9e);
+        cursor: default;
+      }
+      .icon-btn .circle {
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 2px solid currentColor;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.1em;
+        line-height: 1;
+      }
+      .actions-row {
+        display: flex;
+        gap: 6px;
+        padding: 0 16px;
+        flex-wrap: wrap;
+      }
+      .action-chip {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 14px;
         border-radius: 8px;
-        padding: 6px 12px;
+        border: none;
+        background: transparent;
+        color: var(--primary-color, #03a9f4);
+        font-size: 0.82em;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+        cursor: pointer;
+        user-select: none;
       }
-      .value-picker label {
-        font-size: 0.85em;
-        color: var(--secondary-text-color);
+      .action-chip:hover:not(.active) {
+        background: var(--secondary-background-color, #f0f0f0);
       }
-      .value-picker input[type="range"] {
-        width: 120px;
+      .action-chip.active {
+        background: var(--primary-color, #03a9f4);
+        color: var(--text-primary-color, #fff);
+      }
+      .action-chip .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+      }
+      .value-row {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 10px 24px 2px;
+      }
+      .value-row input[type="range"] {
+        flex: 1;
         accent-color: var(--primary-color);
       }
-      .value-picker select {
-        background: var(--card-background-color, white);
+      .value-row select {
+        background: var(--card-background-color, #fff);
         color: var(--primary-text-color);
         border: 1px solid var(--divider-color);
-        border-radius: 4px;
-        padding: 4px 8px;
+        border-radius: 6px;
+        padding: 6px 10px;
         font-size: 0.9em;
       }
       .value-display {
-        font-weight: 500;
-        min-width: 40px;
-        text-align: center;
+        font-weight: 600;
+        min-width: 48px;
+        text-align: right;
       }
-      .actions {
+      .footer {
         display: flex;
-        gap: 4px;
-        margin-left: auto;
+        gap: 10px;
+        padding: 14px 16px 16px;
       }
       .btn {
-        padding: 6px 12px;
-        border-radius: 6px;
-        border: 1px solid var(--divider-color);
-        background: var(--secondary-background-color);
-        color: var(--primary-text-color);
+        padding: 8px 18px;
+        border-radius: 8px;
+        border: 1px solid var(--primary-color, #03a9f4);
+        background: transparent;
+        color: var(--primary-color, #03a9f4);
+        font-size: 0.82em;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
         cursor: pointer;
+      }
+      .btn.primary {
+        background: var(--primary-color, #03a9f4);
+        color: var(--text-primary-color, #fff);
+      }
+      .hint {
+        padding: 4px 24px 10px;
         font-size: 0.8em;
-        white-space: nowrap;
-      }
-      .btn:hover {
-        background: var(--disabled-color, #bdbdbd);
-      }
-      .legend {
-        display: flex;
-        gap: 12px;
-        padding: 4px 16px 12px;
-        flex-wrap: wrap;
-        font-size: 0.75em;
         color: var(--secondary-text-color);
       }
-      .legend-item {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-      }
-      .legend-swatch {
-        width: 12px;
-        height: 12px;
-        border-radius: 2px;
-        border: 1px solid var(--divider-color);
-      }
-      .legend-gradient {
-        width: 140px;
-        height: 10px;
-        border-radius: 5px;
-        align-self: center;
-      }
-      .hour-markers th {
-        border-bottom: 1px solid var(--divider-color, #e0e0e0);
-      }
-      .no-schedule {
+      .loading {
         padding: 32px 16px;
         text-align: center;
         color: var(--secondary-text-color);
@@ -256,14 +403,19 @@ class HeishaMonSchedulerCard extends LitElement {
 
   constructor() {
     super();
-    this._schedule = null;
-    this._channels = null;
+    this._blocks = null;
+    this._orig = null;
+    this._actions = null;
+    this._enabled = true;
+    this._tab = "daily";
+    this._customDays = ["mon"];
+    this._selectedId = null;
+    this._dirty = false;
+    this._drag = null;
+    this._newCounter = 0;
     this._dayLabels = localizedDayLabels();
-    this._activeChannel = null;
-    this._editValue = null;
-    this._isDragging = false;
-    this._dragStart = null;
-    this._boundMouseUp = this._onMouseUp.bind(this);
+    this._boundDragMove = this._onDragMove.bind(this);
+    this._boundDragUp = this._onDragUp.bind(this);
   }
 
   setConfig(config) {
@@ -275,7 +427,7 @@ class HeishaMonSchedulerCard extends LitElement {
     this._hass = hass;
     if (!oldHass && hass) {
       this._dayLabels = localizedDayLabels(hass.locale?.language);
-      this._loadSchedule();
+      this._load();
     }
   }
 
@@ -283,418 +435,440 @@ class HeishaMonSchedulerCard extends LitElement {
     return this._hass;
   }
 
-  async _loadSchedule() {
+  async _load() {
     if (!this._hass) return;
     try {
       const result = await this._hass.callWS({
         type: "heishamon_scheduler/get_schedule",
-        schedule_id: "default",
       });
-      this._schedule = result.schedule;
-      this._channels = result.channels;
-      if (!this._activeChannel && this._channels) {
-        this._activeChannel = Object.keys(this._channels)[0];
-      }
-      if (this._activeChannel && this._channels) {
-        this._setDefaultEditValue();
-      }
+      this._blocks = result.blocks.map((b) => ({ ...b, days: [...b.days] }));
+      this._orig = JSON.parse(JSON.stringify(this._blocks));
+      this._actions = result.actions;
+      this._enabled = result.enabled;
+      this._dirty = false;
+      this._selectedId = null;
       this.requestUpdate();
     } catch (e) {
       console.error("Failed to load schedule:", e);
     }
   }
 
-  _setDefaultEditValue() {
-    const ch = this._channels[this._activeChannel];
-    if (!ch) return;
-    if (ch.value_type === "number") {
-      this._editValue = ch.default ?? ch.min ?? 0;
-    } else if (ch.value_type === "enum") {
-      this._editValue = parseInt(Object.keys(ch.options)[0]);
+  async _save() {
+    if (!this._hass || !this._blocks) return;
+    try {
+      const result = await this._hass.callWS({
+        type: "heishamon_scheduler/set_blocks",
+        blocks: this._blocks,
+      });
+      this._blocks = result.blocks.map((b) => ({ ...b, days: [...b.days] }));
+      this._orig = JSON.parse(JSON.stringify(this._blocks));
+      this._dirty = false;
+      this._selectedId = null;
+      this.requestUpdate();
+    } catch (e) {
+      console.error("Failed to save schedule:", e);
     }
   }
 
-  _getColor(channelId, value) {
-    const ch = this._channels[channelId];
-    if (!ch) return "#808080";
+  _cancel() {
+    this._blocks = JSON.parse(JSON.stringify(this._orig));
+    this._dirty = false;
+    this._selectedId = null;
+    this.requestUpdate();
+  }
 
-    if (ch.value_type === "number") {
-      const min = ch.min ?? 0;
-      const max = ch.max ?? 100;
-      const ratio = Math.min(1, Math.max(0, (value - min) / (max - min)));
-      // Blue (low) -> neutral grey (middle) -> orange-red (high)
-      const lerp = (a, b, t) => a.map((x, i) => Math.round(x + (b[i] - x) * t));
-      const low = [66, 133, 244];
-      const mid = [158, 167, 173];
-      const high = [234, 88, 54];
-      const rgb = ratio < 0.5
-        ? lerp(low, mid, ratio * 2)
-        : lerp(mid, high, (ratio - 0.5) * 2);
-      return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+  async _toggleEnabled(e) {
+    const enabled = e.target.checked;
+    try {
+      await this._hass.callWS({
+        type: "heishamon_scheduler/set_enabled",
+        enabled: enabled,
+      });
+      this._enabled = enabled;
+    } catch (err) {
+      console.error("Failed to toggle schedule:", err);
     }
-
-    // Enum: distinct colors
-    const colors = [
-      "#4CAF50", "#2196F3", "#FF9800", "#9C27B0",
-      "#00BCD4", "#F44336", "#8BC34A",
-    ];
-    const keys = Object.keys(ch.options).map(Number);
-    const idx = keys.indexOf(value);
-    return colors[idx % colors.length];
+    this.requestUpdate();
   }
 
-  _getValueAtSlot(day, slotIndex) {
-    if (!this._schedule || !this._activeChannel) return null;
-    const channel = this._schedule.channels?.[this._activeChannel];
-    if (!channel?.days) return null;
+  _tabDays() {
+    return this._tab === "custom" ? this._customDays : DAY_PRESETS[this._tab];
+  }
 
-    const slotTime = HOURS[slotIndex];
+  _sameDays(a, b) {
+    if (!a || !b || a.length !== b.length) return false;
+    const set = new Set(a);
+    return b.every((d) => set.has(d));
+  }
 
-    // Find value: walk backward through current day, then previous days.
-    // Offset 7 wraps to the same weekday of the previous week so slots
-    // before a day's first entry inherit the schedule instead of showing
-    // as empty.
-    const dayIdx = DAYS.indexOf(day);
+  _tabBlocks() {
+    const days = this._tabDays();
+    return (this._blocks || [])
+      .filter((b) => this._sameDays(b.days, days))
+      .sort((a, b) => t2m(a.start) - t2m(b.start));
+  }
 
-    for (let offset = 0; offset < 8; offset++) {
-      const checkDayIdx = (dayIdx - offset + 7) % 7;
-      const checkDay = DAYS[checkDayIdx];
-      const entries = channel.days[checkDay] || [];
+  _selectedBlock() {
+    return (this._blocks || []).find((b) => b.id === this._selectedId) || null;
+  }
 
-      if (entries.length === 0) continue;
-
-      if (offset === 0) {
-        // Current day: find last entry at or before slotTime
-        const candidates = entries.filter(e => e.time <= slotTime);
-        if (candidates.length > 0) {
-          return candidates[candidates.length - 1].value;
-        }
-      } else {
-        // Previous days: take last entry
-        return entries[entries.length - 1].value;
-      }
+  _blockLabel(block) {
+    const action = this._actions?.[block.action];
+    if (!action) return block.action;
+    if (action.value_type === "number") {
+      return `${block.value}${action.unit || ""}`;
     }
-    return null;
-  }
-
-  _getNowSlot() {
-    const now = new Date();
-    const dayIdx = (now.getDay() + 6) % 7; // JS: 0=Sun, we need 0=Mon
-    const slotIdx = now.getHours() * 2 + (now.getMinutes() >= 30 ? 1 : 0);
-    return { dayIdx, slotIdx };
-  }
-
-  _onCellMouseDown(day, slotIndex, e) {
-    e.preventDefault();
-    // Release implicit pointer capture so pointerenter fires on
-    // neighbouring cells while dragging (relevant for touch)
-    if (e.target.hasPointerCapture?.(e.pointerId)) {
-      e.target.releasePointerCapture(e.pointerId);
+    if (action.value_type === "enum") {
+      return action.options?.[block.value] ?? action.name;
     }
-    this._isDragging = true;
-    this._dragStart = { day, slotIndex };
-    this._applyValueToSlot(day, slotIndex, this._editValue);
-    document.addEventListener("pointerup", this._boundMouseUp);
+    return action.name;
   }
 
-  _onCellMouseEnter(day, slotIndex) {
-    if (!this._isDragging) return;
-    this._applyValueToSlot(day, slotIndex, this._editValue);
-  }
-
-  _onMouseUp() {
-    if (this._isDragging) {
-      this._isDragging = false;
-      this._saveSchedule();
+  _addBlock() {
+    const blocks = this._tabBlocks();
+    const gaps = [];
+    let cursor = 0;
+    for (const b of blocks) {
+      if (t2m(b.start) - cursor >= 30) gaps.push([cursor, t2m(b.start)]);
+      cursor = Math.max(cursor, t2m(b.end));
     }
-    document.removeEventListener("pointerup", this._boundMouseUp);
-  }
+    if (1440 - cursor >= 30) gaps.push([cursor, 1440]);
+    if (!gaps.length) return;
 
-  _applyValueToSlot(day, slotIndex, value) {
-    if (!this._schedule || !this._activeChannel) return;
+    const gap = gaps.reduce((a, g) => (g[1] - g[0] > a[1] - a[0] ? g : a));
+    const start = gap[0];
+    const end = Math.min(start + 120, gap[1]);
 
-    const channel = this._schedule.channels?.[this._activeChannel] ?? {
+    const block = {
+      id: `new-${++this._newCounter}`,
+      days: [...this._tabDays()],
+      start: m2t(start),
+      end: m2t(end),
+      action: "heat",
+      value: null,
       enabled: true,
-      days: {},
     };
-    if (!this._schedule.channels) this._schedule.channels = {};
-    this._schedule.channels[this._activeChannel] = channel;
-
-    if (!channel.days) channel.days = {};
-    if (!channel.days[day]) channel.days[day] = [];
-
-    const time = HOURS[slotIndex];
-    const entries = channel.days[day];
-
-    // Remove existing entry at this time
-    const filtered = entries.filter(e => e.time !== time);
-    filtered.push({ time, value });
-    filtered.sort((a, b) => a.time.localeCompare(b.time));
-
-    // Optimize: remove entry if same value as previous
-    const optimized = [];
-    for (let i = 0; i < filtered.length; i++) {
-      if (i === 0 || filtered[i].value !== filtered[i - 1].value) {
-        optimized.push(filtered[i]);
-      }
-    }
-
-    channel.days[day] = optimized;
+    this._blocks = [...this._blocks, block];
+    this._selectedId = block.id;
+    this._dirty = true;
     this.requestUpdate();
   }
 
-  async _saveSchedule() {
-    if (!this._hass || !this._activeChannel || !this._schedule) return;
-    const channel = this._schedule.channels?.[this._activeChannel];
-    if (!channel?.days) return;
-
-    // Save each day individually
-    for (const day of DAYS) {
-      const entries = channel.days[day] || [];
-      try {
-        await this._hass.callWS({
-          type: "heishamon_scheduler/set_schedule",
-          channel_id: this._activeChannel,
-          day: day,
-          entries: entries,
-          schedule_id: "default",
-        });
-      } catch (e) {
-        console.error(`Failed to save ${day}:`, e);
-      }
-    }
-  }
-
-  _copyDayToAll(sourceDay) {
-    if (!this._schedule || !this._activeChannel) return;
-    const channel = this._schedule.channels?.[this._activeChannel];
-    if (!channel?.days?.[sourceDay]) return;
-
-    const source = JSON.parse(JSON.stringify(channel.days[sourceDay]));
-    for (const day of DAYS) {
-      channel.days[day] = JSON.parse(JSON.stringify(source));
-    }
+  _removeBlock() {
+    if (!this._selectedId) return;
+    this._blocks = this._blocks.filter((b) => b.id !== this._selectedId);
+    this._selectedId = null;
+    this._dirty = true;
     this.requestUpdate();
-    this._saveSchedule();
   }
 
-  _copyWeekdaysToWeekend() {
-    if (!this._schedule || !this._activeChannel) return;
-    const channel = this._schedule.channels?.[this._activeChannel];
-    if (!channel?.days?.["mon"]) return;
-
-    const source = JSON.parse(JSON.stringify(channel.days["mon"]));
-    for (const day of ["sat", "sun"]) {
-      channel.days[day] = JSON.parse(JSON.stringify(source));
+  _setAction(actionId) {
+    const block = this._selectedBlock();
+    const action = this._actions?.[actionId];
+    if (!block || !action) return;
+    block.action = actionId;
+    if (action.value_type === "number" || action.value_type === "enum") {
+      block.value = action.default;
+    } else {
+      block.value = null;
     }
+    this._dirty = true;
     this.requestUpdate();
-    this._saveSchedule();
   }
 
-  _clearDay(day) {
-    if (!this._schedule || !this._activeChannel) return;
-    const channel = this._schedule.channels?.[this._activeChannel];
-    if (!channel?.days) return;
-
-    channel.days[day] = [];
+  _setValue(value) {
+    const block = this._selectedBlock();
+    if (!block) return;
+    block.value = Number(value);
+    this._dirty = true;
     this.requestUpdate();
-    this._saveSchedule();
   }
 
-  _clearAll() {
-    if (!this._schedule || !this._activeChannel) return;
-    const channel = this._schedule.channels?.[this._activeChannel];
-    if (!channel?.days) return;
-
-    for (const day of DAYS) {
-      channel.days[day] = [];
+  _toggleCustomDay(day) {
+    const days = new Set(this._customDays);
+    if (days.has(day)) {
+      if (days.size > 1) days.delete(day);
+    } else {
+      days.add(day);
     }
+    this._customDays = DAYS.filter((d) => days.has(d));
+    this._selectedId = null;
     this.requestUpdate();
-    this._saveSchedule();
   }
 
-  _renderValuePicker() {
-    if (!this._channels || !this._activeChannel) return html``;
-    const ch = this._channels[this._activeChannel];
+  // --- Handle dragging -------------------------------------------------
 
-    if (ch.value_type === "number") {
-      return html`
-        <div class="value-picker">
-          <label>Wert:</label>
-          <input
-            type="range"
-            min="${ch.min}"
-            max="${ch.max}"
-            step="${ch.step || 1}"
-            .value="${this._editValue}"
-            @input="${(e) => { this._editValue = Number(e.target.value); this.requestUpdate(); }}"
-          />
-          <span class="value-display">
-            ${this._editValue}${ch.unit || ""}
-          </span>
-        </div>
-      `;
-    }
-
-    if (ch.value_type === "enum") {
-      return html`
-        <div class="value-picker">
-          <label>Modus:</label>
-          <select
-            @change="${(e) => { this._editValue = Number(e.target.value); this.requestUpdate(); }}"
-          >
-            ${Object.entries(ch.options).map(
-              ([val, label]) => html`
-                <option value="${val}" ?selected="${Number(val) === this._editValue}">
-                  ${label}
-                </option>
-              `
-            )}
-          </select>
-        </div>
-      `;
-    }
-
-    return html``;
+  _onHandleDown(e, blockId, edge) {
+    e.preventDefault();
+    e.stopPropagation();
+    const track = this.renderRoot.querySelector(".track");
+    if (!track) return;
+    this._drag = { blockId, edge, rect: track.getBoundingClientRect() };
+    window.addEventListener("pointermove", this._boundDragMove);
+    window.addEventListener("pointerup", this._boundDragUp);
   }
 
-  _renderLegend() {
-    if (!this._channels || !this._activeChannel) return html``;
-    const ch = this._channels[this._activeChannel];
+  _onDragMove(e) {
+    if (!this._drag) return;
+    const { blockId, edge, rect } = this._drag;
+    const raw = ((e.clientX - rect.left) / rect.width) * 1440;
+    const mins = clamp(Math.round(raw / 10) * 10, 0, 1440);
 
-    if (ch.value_type === "enum") {
-      return html`
-        <div class="legend">
-          ${Object.entries(ch.options).map(
-            ([val, label]) => html`
-              <div class="legend-item">
-                <div
-                  class="legend-swatch"
-                  style="background: ${this._getColor(this._activeChannel, Number(val))}"
-                ></div>
-                ${label}
+    const blocks = this._tabBlocks();
+    const idx = blocks.findIndex((b) => b.id === blockId);
+    if (idx < 0) return;
+    const block = blocks[idx];
+
+    if (edge === "start") {
+      const prev = blocks[idx - 1];
+      const linked = prev && t2m(prev.end) === t2m(block.start);
+      const lo = prev ? (linked ? t2m(prev.start) + 10 : t2m(prev.end)) : 0;
+      const hi = t2m(block.end) - 10;
+      const v = clamp(mins, lo, hi);
+      block.start = m2t(v);
+      if (linked) prev.end = m2t(v);
+    } else {
+      const next = blocks[idx + 1];
+      const linked = next && t2m(next.start) === t2m(block.end);
+      const lo = t2m(block.start) + 10;
+      const hi = next
+        ? linked ? t2m(next.end) - 10 : t2m(next.start)
+        : 1440;
+      const v = clamp(mins, lo, hi);
+      block.end = m2t(v);
+      if (linked) next.start = m2t(v);
+    }
+
+    this._dirty = true;
+    this.requestUpdate();
+  }
+
+  _onDragUp() {
+    this._drag = null;
+    window.removeEventListener("pointermove", this._boundDragMove);
+    window.removeEventListener("pointerup", this._boundDragUp);
+  }
+
+  // --- Rendering --------------------------------------------------------
+
+  _renderTimeline() {
+    const blocks = this._tabBlocks();
+    const bubbles = new Map();
+    for (const b of blocks) {
+      bubbles.set(t2m(b.start), b.start);
+      bubbles.set(t2m(b.end), b.end);
+    }
+
+    const today = DAYS[(new Date().getDay() + 6) % 7];
+    const showNow = this._tabDays().includes(today);
+    const nowMins = new Date().getHours() * 60 + new Date().getMinutes();
+
+    return html`
+      <div class="timeline">
+        <div class="track">
+          ${showNow
+            ? html`<div class="now-line" style="left: ${pct(nowMins)}%"></div>`
+            : ""}
+          ${blocks.map((b) => {
+            const start = t2m(b.start);
+            const end = Math.max(t2m(b.end), start + 10);
+            const color = ACTION_COLORS[b.action] || "#888";
+            return html`
+              <div
+                class="block ${b.id === this._selectedId ? "selected" : ""}"
+                style="left: ${pct(start)}%; width: ${pct(end - start)}%; background: ${color}"
+                @click="${() => {
+                  this._selectedId = b.id === this._selectedId ? null : b.id;
+                  this.requestUpdate();
+                }}"
+              >
+                ${end - start >= 90 ? this._blockLabel(b) : ""}
               </div>
+            `;
+          })}
+          ${blocks.map((b) => html`
+            <div
+              class="handle"
+              style="left: ${pct(t2m(b.start))}%"
+              @pointerdown="${(e) => this._onHandleDown(e, b.id, "start")}"
+            >&#x2039;&#x203a;</div>
+            <div
+              class="handle"
+              style="left: ${pct(t2m(b.end))}%"
+              @pointerdown="${(e) => this._onHandleDown(e, b.id, "end")}"
+            >&#x2039;&#x203a;</div>
+          `)}
+          ${[...bubbles.entries()].map(
+            ([mins, label]) => html`
+              <div class="bubble" style="left: ${pct(mins)}%">${label}</div>
             `
           )}
         </div>
-      `;
-    }
+      </div>
+      <div class="axis">
+        ${[3, 6, 9, 12, 15, 18, 21].map(
+          (h) => html`
+            <span style="left: ${pct(h * 60)}%">
+              ${String(h).padStart(2, "0")}:00
+            </span>
+          `
+        )}
+      </div>
+      ${blocks.length === 0
+        ? html`<div class="hint">
+            Noch keine Zeitblöcke für diese Tage — mit „Hinzufügen“ anlegen.
+            Außerhalb der Blöcke gelten die HeishaMon-Einstellungen.
+          </div>`
+        : ""}
+    `;
+  }
 
-    if (ch.value_type === "number") {
-      const mid = Math.round((ch.min + ch.max) / 2);
-      const gradient = `linear-gradient(to right, ${this._getColor(
-        this._activeChannel, ch.min
-      )}, ${this._getColor(this._activeChannel, mid)}, ${this._getColor(
-        this._activeChannel, ch.max
-      )})`;
-      return html`
-        <div class="legend">
-          <div class="legend-item">${ch.min}${ch.unit || ""}</div>
-          <div class="legend-gradient" style="background: ${gradient}"></div>
-          <div class="legend-item">${ch.max}${ch.unit || ""}</div>
-        </div>
-      `;
-    }
+  _renderActionEditor() {
+    const block = this._selectedBlock();
+    if (!block || !this._actions) return html``;
+    const action = this._actions[block.action];
 
-    return html``;
+    return html`
+      <div class="section-label">Aktion</div>
+      <div class="actions-row">
+        ${Object.entries(this._actions).map(
+          ([id, a]) => html`
+            <button
+              class="action-chip ${block.action === id ? "active" : ""}"
+              @click="${() => this._setAction(id)}"
+            >
+              <span
+                class="dot"
+                style="background: ${ACTION_COLORS[id] || "#888"}"
+              ></span>
+              ${a.name}
+            </button>
+          `
+        )}
+      </div>
+      ${action?.value_type === "number"
+        ? html`
+            <div class="value-row">
+              <input
+                type="range"
+                min="${action.min}"
+                max="${action.max}"
+                step="${action.step || 1}"
+                .value="${String(block.value ?? action.default)}"
+                @input="${(e) => this._setValue(e.target.value)}"
+              />
+              <span class="value-display">
+                ${block.value ?? action.default}${action.unit || ""}
+              </span>
+            </div>
+          `
+        : ""}
+      ${action?.value_type === "enum"
+        ? html`
+            <div class="value-row">
+              <select
+                @change="${(e) => this._setValue(e.target.value)}"
+              >
+                ${Object.entries(action.options).map(
+                  ([val, label]) => html`
+                    <option
+                      value="${val}"
+                      ?selected="${Number(val) === (block.value ?? action.default)}"
+                    >
+                      ${label}
+                    </option>
+                  `
+                )}
+              </select>
+            </div>
+          `
+        : ""}
+    `;
   }
 
   render() {
-    if (!this._schedule || !this._channels) {
+    if (!this._blocks || !this._actions) {
       return html`
-        <ha-card>
-          <div class="no-schedule">Lade Zeitplan...</div>
-        </ha-card>
+        <ha-card><div class="loading">Lade Zeitplan...</div></ha-card>
       `;
     }
-
-    const now = this._getNowSlot();
 
     return html`
       <ha-card>
         <div class="card-header">
           <span>HeishaMon Zeitplan</span>
+          <label class="enable-toggle">
+            <input
+              type="checkbox"
+              .checked="${this._enabled}"
+              @change="${this._toggleEnabled}"
+            />
+            ${this._enabled ? "Aktiv" : "Pausiert"}
+          </label>
         </div>
 
+        <div class="section-label">Tage</div>
         <div class="tabs">
-          ${Object.entries(this._channels).map(
-            ([id, ch]) => html`
+          ${Object.keys(TAB_LABELS).map(
+            (tab) => html`
               <button
-                class="tab ${this._activeChannel === id ? "active" : ""}"
+                class="chip ${this._tab === tab ? "active" : ""}"
                 @click="${() => {
-                  this._activeChannel = id;
-                  this._setDefaultEditValue();
+                  this._tab = tab;
+                  this._selectedId = null;
                   this.requestUpdate();
                 }}"
               >
-                ${ch.name}
+                ${TAB_LABELS[tab]}
               </button>
             `
           )}
         </div>
+        ${this._tab === "custom"
+          ? html`
+              <div class="day-chips">
+                ${DAYS.map(
+                  (day) => html`
+                    <button
+                      class="day-chip ${this._customDays.includes(day) ? "active" : ""}"
+                      @click="${() => this._toggleCustomDay(day)}"
+                    >
+                      ${this._dayLabels[day]}
+                    </button>
+                  `
+                )}
+              </div>
+            `
+          : ""}
+
+        <div class="section-label">Zeit</div>
+        ${this._renderTimeline()}
 
         <div class="toolbar">
-          ${this._renderValuePicker()}
-          <div class="actions">
-            <button class="btn" @click="${() => this._copyDayToAll(DAYS[now.dayIdx])}">
-              Heute → Alle
-            </button>
-            <button class="btn" @click="${this._clearAll}">
-              Löschen
-            </button>
-            <button class="btn" @click="${this._loadSchedule}">
-              ↻
-            </button>
-          </div>
+          <button class="icon-btn" @click="${this._addBlock}">
+            <span class="circle">+</span> Hinzufügen
+          </button>
+          <button
+            class="icon-btn"
+            ?disabled="${!this._selectedId}"
+            @click="${this._removeBlock}"
+          >
+            <span class="circle">&#8722;</span> Entfernen
+          </button>
         </div>
 
-        ${this._renderLegend()}
+        ${this._renderActionEditor()}
 
-        <div class="schedule-grid">
-          <table>
-            <thead>
-              <tr class="hour-markers">
-                <th class="day-label"></th>
-                ${Array.from({ length: 8 }, (_, i) => html`
-                  <th colspan="6">${String(i * 3).padStart(2, "0")}</th>
-                `)}
-              </tr>
-            </thead>
-            <tbody>
-              ${DAYS.map(
-                (day, dayIdx) => html`
-                  <tr>
-                    <th class="day-label">${this._dayLabels[day]}</th>
-                    ${HOURS.map((_, slotIdx) => {
-                      const value = this._getValueAtSlot(day, slotIdx);
-                      const isNow = dayIdx === now.dayIdx && slotIdx === now.slotIdx;
-                      const classes = [
-                        "cell",
-                        isNow ? "now-marker" : "",
-                        value === null ? "empty" : "",
-                        slotIdx % 6 === 5 ? "h3" : "",
-                        slotIdx === 0 ? "slot-first" : "",
-                        slotIdx === HOURS.length - 1 ? "slot-last" : "",
-                      ].join(" ");
-                      const color = value !== null
-                        ? this._getColor(this._activeChannel, value)
-                        : "";
-                      return html`
-                        <td
-                          class="${classes}"
-                          style="${color ? `background-color: ${color}` : ""}"
-                          title="${this._dayLabels[day]} ${HOURS[slotIdx]}: ${value !== null ? value : "-"}"
-                          @pointerdown="${(e) => this._onCellMouseDown(day, slotIdx, e)}"
-                          @pointerenter="${() => this._onCellMouseEnter(day, slotIdx)}"
-                        ></td>
-                      `;
-                    })}
-                  </tr>
-                `
-              )}
-            </tbody>
-          </table>
-        </div>
+        ${this._dirty
+          ? html`
+              <div class="footer">
+                <button class="btn" @click="${this._cancel}">Abbrechen</button>
+                <button class="btn primary" @click="${this._save}">
+                  Speichern
+                </button>
+              </div>
+            `
+          : html`<div style="height: 12px"></div>`}
       </ha-card>
     `;
   }

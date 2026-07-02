@@ -1,27 +1,58 @@
 # HeishaMon Scheduler
 
-Wochen-Zeitsteuerung für Panasonic-Aquarea-Wärmepumpen über
+Zeitblock-Steuerung für Panasonic-Aquarea-Wärmepumpen über
 [HeishaMon](https://github.com/heishamon/HeishaMon) — als Home-Assistant-Integration
-mit visueller Lovelace-Karte.
+mit visueller Timeline-Karte im Stil der bekannten Scheduler-Card.
 
 ![HA 2024.12+](https://img.shields.io/badge/Home%20Assistant-2024.12%2B-blue)
 
-## Funktionen
+## Konzept
 
-- **Wochenplan pro Kanal** in 30-Minuten-Slots, per Drag im Dashboard einzeichnen
-- **Kanäle:**
-  - Z1/Z2 Heat Shift (Heizkurven-Verschiebung oder Direkt-Temperatur)
-  - Warmwasser-Solltemperatur (DHW)
-  - Betriebsmodus (Heizen / Kühlen / Auto / DHW / Kombinationen)
-  - Flüstermodus (Quiet Mode, Stufe 0–3)
-  - Powerful Mode (30/60/90 min)
-  - Force DHW
-- **Schonender MQTT-Versand:** Kommandos werden gedrosselt (min. 30 s Abstand),
-  und nur gesendet, wenn die Pumpe nicht ohnehin schon auf dem Zielwert steht
-- **Offline-Erkennung** über das HeishaMon-LWT-Topic inkl. Neuauswertung beim
-  Reconnect und `binary_sensor` für die Verfügbarkeit
-- **Sensoren** je Kanal (aktueller Planwert, nächste Änderung) und **Schalter**
-  zum Aktivieren/Deaktivieren einzelner Kanäle oder des gesamten Plans
+Statt starrer Wochenpläne definierst du **Zeitblöcke**: „Werktags 07–12 Uhr
+Heizen“, „Täglich 12–14 Uhr Warmwasser“, „Nachts Flüstermodus Stufe 2“.
+
+- **Innerhalb eines Blocks** sendet die Integration die gewählte Aktion per
+  MQTT an HeishaMon und steuert damit die Wärmepumpe.
+- **Außerhalb der Blöcke passiert nichts** — die Pumpe läuft mit ihren
+  eigenen Einstellungen (Heizkurve, HeishaMon-Konfiguration).
+- **Beim Blockende wird der vorherige Zustand wiederhergestellt:** Beim
+  Blockstart merkt sich die Integration den Ist-Zustand der Pumpe (aus den
+  HeishaMon-Feedback-Topics) und sendet ihn danach zurück.
+
+## Aktionen
+
+| Aktion | MQTT-Kommando | Nach Blockende |
+|---|---|---|
+| Heizen | `SetOperationMode` = Heat | vorheriger Modus |
+| Kühlen | `SetOperationMode` = Cool | vorheriger Modus |
+| Warmwasser | `SetForceDHW` = 1 | Force DHW aus |
+| Aus | `SetHeatpump` = 0 | Wärmepumpe an |
+| Heizkurve ± | `SetZ1HeatRequestTemperature` | vorheriger Shift (Fallback 0) |
+| WW-Temperatur | `SetDHWTemp` | vorherige Solltemperatur |
+| Flüstermodus | `SetQuietMode` | vorherige Stufe (Fallback Aus) |
+
+Kommandos werden gedrosselt (min. 30 s Abstand). Über das LWT-Topic erkennt
+die Integration, ob HeishaMon online ist; bei Reconnect wird sofort neu
+ausgewertet.
+
+## Karte
+
+Die mitgelieferte Lovelace-Karte bietet:
+
+- Tag-Gruppen: **Täglich / Werktage / Wochenende / Individuell**
+- Timeline mit **ziehbaren Blockgrenzen** (10-Minuten-Raster, Touch-fähig)
+- Aktion und Wert (Slider/Auswahl) pro Block
+- Blöcke hinzufügen/entfernen, Speichern/Abbrechen
+- Master-Schalter zum Pausieren des gesamten Zeitplans
+
+Die Karte wird von der Integration automatisch geladen — kein Kopieren nach
+`/config/www/`, kein Ressourcen-Eintrag nötig.
+
+## Entitäten
+
+- `sensor` **Active Actions** — welche Blöcke/Aktionen gerade aktiv sind
+- `switch` **Schedule Enabled** — Zeitplan pausieren/aktivieren
+- `binary_sensor` **HeishaMon Online** — Verbindungsstatus per LWT
 
 ## Voraussetzungen
 
@@ -39,28 +70,21 @@ mit visueller Lovelace-Karte.
 3. Dem Dashboard eine Karte vom Typ **HeishaMon Scheduler** hinzufügen
    (*Dashboard bearbeiten → Karte hinzufügen → nach „HeishaMon“ suchen*).
 
-Die Lovelace-Karte wird von der Integration mitgeliefert und **automatisch als
-Dashboard-Ressource registriert** — manuelles Kopieren ist nicht nötig. Nur bei
-YAML-verwalteten Dashboards muss die Ressource
-`/heishamon_scheduler/heishamon-scheduler-card.js` (Typ: Modul) selbst
-eingetragen werden.
-
 ## Konfiguration
 
-Beim Einrichten werden das MQTT-Basis-Topic (Standard: `panasonic_heat_pump`)
-und die gewünschten Kanäle gewählt. Über **Optionen** der Integration lassen
-sich nachträglich ändern:
+Beim Einrichten wird das MQTT-Basis-Topic gewählt (Standard:
+`panasonic_heat_pump`). Über **Optionen** der Integration lassen sich ändern:
 
 | Option | Bedeutung |
 |---|---|
 | MQTT Basis-Topic | Muss dem HeishaMon-Basis-Topic entsprechen |
-| Zeitplan-Kanäle | Welche Kanäle geplant werden |
-| Z1/Z2 Heat Request Min/Max | `-5…5` für Shift-Betrieb, z. B. `20…55` für Direkt-Temperatur |
+| Z1 Heat Request Min/Max | `-5…5` für Shift-Betrieb, z. B. `20…55` für Direkt-Temperatur |
 
 ## Hinweise
 
-- `SetOperationMode` kennt 7 Kommandowerte, der Zustand `Operating_Mode_State`
-  meldet aber 9 (Auto wird als Auto-Heizen/Auto-Kühlen gemeldet). Die
-  Integration mappt das korrekt.
-- Der Plan greift „rückwirkend“: Der zuletzt vor dem aktuellen Zeitpunkt
-  liegende Eintrag gilt, auch über Tagesgrenzen hinweg.
+- Überlappen sich Blöcke aus verschiedenen Tag-Gruppen (z. B. „Täglich“ und
+  „Werktage“) mit demselben Kommando, gewinnt der zuletzt angelegte Block.
+- Beim Update von Version 1.x startet der Zeitplan leer (neues Datenmodell);
+  die alten Wochenplan-Daten bleiben im Storage erhalten, werden aber nicht
+  mehr verwendet. Verwaiste Entitäten der 1.x-Kanäle können in HA gelöscht
+  werden.

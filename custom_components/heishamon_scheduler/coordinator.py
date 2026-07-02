@@ -16,14 +16,20 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.util import dt as dt_util
 
-from .const import CHANNELS, MIN_COMMAND_INTERVAL, STARTUP_GRACE
+from .const import ACTIONS, DAYS, MIN_COMMAND_INTERVAL, STARTUP_GRACE
 from .storage import ScheduleStore
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class ScheduleCoordinator:
-    """Evaluate schedules and dispatch MQTT commands."""
+    """Evaluate schedule blocks and dispatch MQTT commands.
+
+    A block applies its action while active. When it starts, the current
+    heat pump state (from the feedback topic) is captured as a baseline;
+    when it ends, that baseline (or the action's fixed restore value) is
+    sent back so the pump returns to its own settings/heating curve.
+    """
 
     def __init__(
         self,
@@ -31,20 +37,21 @@ class ScheduleCoordinator:
         entry: ConfigEntry,
         store: ScheduleStore,
         mqtt_base: str,
-        enabled_channels: list[str],
     ) -> None:
         self.hass = hass
         self.entry = entry
         self.store = store
         self.mqtt_base = mqtt_base
-        self.enabled_channels = enabled_channels
 
-        # State tracking
-        self.last_sent: dict[str, Any] = {}
+        # Heat pump state, keyed by feedback topic (without base)
         self.hp_state: dict[str, Any] = {}
         self.heishamon_online = True
 
-        # Command queue
+        # Active blocks (id -> block) and last applied value per block
+        self._active: dict[str, dict] = {}
+        self._applied: dict[str, Any] = {}
+
+        # Command queue, deduplicated per MQTT command
         self._command_queue: asyncio.Queue = asyncio.Queue()
         self._pending: dict[str, Any] = {}
         self._last_command_time = 0.0
@@ -53,44 +60,55 @@ class ScheduleCoordinator:
         self._unsub_start = None
         self._unsub_mqtt: list = []
 
-        # Listeners for sensor updates
+        # Listeners for entity updates
         self._listeners: list = []
+
+    @property
+    def action_defs(self) -> dict[str, dict]:
+        """Action definitions with per-entry option overrides applied."""
+        defs: dict[str, dict] = {}
+        options = self.entry.options
+        for action_id, action in ACTIONS.items():
+            action = dict(action)
+            if action_id == "z1_shift":
+                action["min"] = options.get("heat_request_min", action["min"])
+                action["max"] = options.get("heat_request_max", action["max"])
+                action["default"] = max(
+                    action["min"], min(action["max"], action["default"])
+                )
+            defs[action_id] = action
+        return defs
 
     async def async_start(self) -> None:
         """Start the schedule evaluation loop."""
-        # Subscribe to feedback topics
-        for channel_id in self.enabled_channels:
-            ch = CHANNELS.get(channel_id)
-            if ch is None:
-                continue
-            topic = f"{self.mqtt_base}/{ch['feedback_topic']}"
+        # Subscribe to all distinct feedback topics
+        topics = {a["feedback_topic"] for a in ACTIONS.values()}
+        for topic in topics:
             unsub = await mqtt.async_subscribe(
-                self.hass, topic,
-                lambda msg, cid=channel_id: self._on_feedback(cid, msg),
+                self.hass, f"{self.mqtt_base}/{topic}",
+                lambda msg, t=topic: self._on_feedback(t, msg),
                 qos=0,
             )
             self._unsub_mqtt.append(unsub)
 
         # Subscribe to LWT
-        lwt_topic = f"{self.mqtt_base}/LWT"
         unsub = await mqtt.async_subscribe(
-            self.hass, lwt_topic, self._on_lwt, qos=0
+            self.hass, f"{self.mqtt_base}/LWT", self._on_lwt, qos=0
         )
         self._unsub_mqtt.append(unsub)
 
-        # Start per-minute evaluation
+        # Per-minute evaluation
         self._unsub_timer = async_track_time_interval(
             self.hass, self._async_evaluate, timedelta(seconds=60)
         )
 
-        # Start command consumer
+        # Command consumer
         self._consumer_task = self.hass.async_create_task(
             self._async_command_consumer()
         )
 
         # Delay the initial evaluation so retained feedback/LWT messages
-        # can arrive first; otherwise we may command values the heat pump
-        # is already running.
+        # can arrive first.
         async def _initial_evaluate(_now) -> None:
             self._unsub_start = None
             await self._async_evaluate(dt_util.now())
@@ -120,89 +138,158 @@ class ScheduleCoordinator:
         """Force immediate schedule evaluation."""
         await self._async_evaluate(dt_util.now())
 
+    @staticmethod
+    def _block_active(block: dict, day_key: str, prev_day_key: str, hhmm: str) -> bool:
+        """Check whether a block is active at the given local time.
+
+        Blocks with end <= start span midnight: they are active from
+        start on a scheduled day until end on the following day.
+        """
+        if not block.get("enabled", True):
+            return False
+        start, end = block["start"], block["end"]
+        days = block.get("days", [])
+        if start < end:
+            return day_key in days and start <= hhmm < end
+        # Overnight block
+        return (day_key in days and hhmm >= start) or (
+            prev_day_key in days and hhmm < end
+        )
+
+    def _command_value(self, block: dict) -> Any:
+        """Resolve the value a block sends while active."""
+        action = self.action_defs.get(block["action"], {})
+        if action.get("value_type") == "none":
+            return action.get("apply_value")
+        return block.get("value", action.get("default"))
+
     async def _async_evaluate(self, now) -> None:
-        """Evaluate all channels against the current schedule."""
+        """Evaluate all blocks: apply started, restore ended."""
         if not self.heishamon_online:
             _LOGGER.debug("HeishaMon offline, skipping evaluation")
             return
 
         now = dt_util.now()
+        hhmm = now.strftime("%H:%M")
+        day_key = DAYS[now.weekday()]
+        prev_day_key = DAYS[(now.weekday() - 1) % 7]
 
-        # Priority order: operation_mode first, then temperatures
-        priority_order = ["operation_mode", "z1_heat_shift", "dhw_temp"]
-        channels_to_check = [
-            ch for ch in priority_order if ch in self.enabled_channels
-        ]
-        # Add any remaining channels not in priority list
-        for ch in self.enabled_channels:
-            if ch not in channels_to_check:
-                channels_to_check.append(ch)
-
-        for channel_id in channels_to_check:
-            scheduled_value = self.store.get_current_value(channel_id, now)
-            if scheduled_value is None:
-                continue
-
-            last = self.last_sent.get(channel_id)
-            hp_current = self.hp_state.get(channel_id)
-
-            # Only send if different from what we last sent AND different
-            # from the actual heat pump state
-            if scheduled_value != last:
-                if self._pending.get(channel_id) == scheduled_value:
-                    # Already queued, waiting for the throttled consumer
+        active: dict[str, dict] = {}
+        if self.store.enabled:
+            for block in self.store.get_blocks():
+                if block["action"] not in ACTIONS:
                     continue
+                if self._block_active(block, day_key, prev_day_key, hhmm):
+                    active[block["id"]] = block
 
-                if hp_current is not None and self._values_match(
-                    channel_id, scheduled_value, hp_current
-                ):
-                    # HP already at target, update tracking without sending
-                    self.last_sent[channel_id] = scheduled_value
-                    continue
+        # Restore blocks that ended (or were deleted/disabled)
+        for block_id, block in list(self._active.items()):
+            if block_id not in active:
+                await self._end_block(block)
 
-                _LOGGER.info(
-                    "Schedule change for %s: %s -> %s",
-                    channel_id, last, scheduled_value,
-                )
-                await self._queue_command(channel_id, scheduled_value)
+        # Apply new blocks; re-apply if the value was edited while active
+        for block_id, block in active.items():
+            if block_id not in self._active:
+                await self._start_block(block)
+            elif self._applied.get(block_id) != self._command_value(block):
+                await self._apply_block(block)
 
-        # Notify listeners (sensors)
+        self._active = active
         self._notify_listeners()
 
-    def _values_match(
-        self, channel_id: str, scheduled: Any, actual: Any
-    ) -> bool:
-        """Check if the scheduled value matches the actual HP state.
+    async def _start_block(self, block: dict) -> None:
+        """Capture the baseline and apply a newly active block."""
+        action = self.action_defs[block["action"]]
 
-        HeishaMon publishes numeric values on all feedback topics. Some
-        state topics report more states than the corresponding command
-        accepts (e.g. Operating_Mode_State 0-8 vs SetOperationMode 0-6),
-        so states are mapped back to command values before comparing.
-        """
-        ch = CHANNELS.get(channel_id, {})
-        state_map = ch.get("state_to_command")
-        if state_map is not None:
-            try:
-                actual = state_map.get(int(float(actual)), actual)
-            except (ValueError, TypeError):
-                pass
+        if (
+            action["restore"] == "baseline"
+            and self.store.get_baseline(block["id"]) is None
+        ):
+            baseline = self._feedback_as_command_value(action)
+            if baseline is not None:
+                self.store.set_baseline(block["id"], baseline)
+                await self.store.async_save()
+                _LOGGER.debug(
+                    "Captured baseline for block %s (%s): %s",
+                    block["id"], block["action"], baseline,
+                )
+
+        await self._apply_block(block)
+
+    async def _apply_block(self, block: dict) -> None:
+        """Send the block's command value."""
+        action = self.action_defs[block["action"]]
+        value = self._command_value(block)
+        if value is None:
+            return
+        _LOGGER.info(
+            "Block %s starts/changes: %s = %s",
+            block["id"], action["command"], value,
+        )
+        await self._queue_command(action["command"], value)
+        self._applied[block["id"]] = value
+
+    async def _end_block(self, block: dict) -> None:
+        """Restore the pre-block state for an ended block."""
+        self._applied.pop(block["id"], None)
+        action = self.action_defs.get(block["action"])
+        if action is None:
+            return
+
+        if action["restore"] == "fixed":
+            restore = action["restore_value"]
+        else:
+            restore = self.store.pop_baseline(block["id"])
+            await self.store.async_save()
+            if restore is None:
+                restore = action.get("restore_fallback")
+            if restore is None:
+                _LOGGER.warning(
+                    "Block %s ended but no baseline was captured for %s; "
+                    "not sending a restore command",
+                    block["id"], action["command"],
+                )
+                return
+
+        _LOGGER.info(
+            "Block %s ended: restoring %s = %s",
+            block["id"], action["command"], restore,
+        )
+        await self._queue_command(action["command"], restore)
+
+    def _feedback_as_command_value(self, action: dict) -> Any | None:
+        """Convert the current feedback state into a command value."""
+        payload = self.hp_state.get(action["feedback_topic"])
+        if payload is None:
+            return None
         try:
-            return float(actual) == float(scheduled)
+            value = int(float(payload))
         except (ValueError, TypeError):
-            return str(actual) == str(scheduled)
+            return None
+        state_map = action.get("state_to_command")
+        if state_map is not None:
+            value = state_map.get(value, value)
+        return value
 
-    async def _queue_command(self, channel_id: str, value: Any) -> None:
-        """Add a command to the throttled queue."""
-        self._pending[channel_id] = value
-        await self._command_queue.put((channel_id, value))
+    async def _queue_command(self, command: str, value: Any) -> None:
+        """Add a command to the throttled queue (deduplicated)."""
+        if self._pending.get(command) == value:
+            return
+        self._pending[command] = value
+        await self._command_queue.put((command, value))
 
     async def _async_command_consumer(self) -> None:
         """Drain the command queue with throttling."""
         while True:
             try:
-                channel_id, value = await self._command_queue.get()
+                command, value = await self._command_queue.get()
             except asyncio.CancelledError:
                 return
+
+            # Skip stale entries superseded by a newer value
+            if self._pending.get(command) != value:
+                self._command_queue.task_done()
+                continue
 
             # Throttle
             now = self.hass.loop.time()
@@ -212,40 +299,28 @@ class ScheduleCoordinator:
                 _LOGGER.debug("Throttling MQTT command, waiting %.1fs", wait)
                 await asyncio.sleep(wait)
 
-            # Send MQTT command
-            ch = CHANNELS.get(channel_id)
-            if ch is None:
-                self._pending.pop(channel_id, None)
-                continue
-
-            topic = f"{self.mqtt_base}/commands/{ch['command']}"
+            topic = f"{self.mqtt_base}/commands/{command}"
             payload = str(value)
 
             try:
                 await mqtt.async_publish(
                     self.hass, topic, payload, qos=0, retain=False
                 )
-                self.last_sent[channel_id] = value
                 self._last_command_time = self.hass.loop.time()
-                _LOGGER.info(
-                    "Sent MQTT command: %s = %s", topic, payload
-                )
+                _LOGGER.info("Sent MQTT command: %s = %s", topic, payload)
             except Exception:
                 _LOGGER.exception("Failed to send MQTT command to %s", topic)
 
-            # Clear pending unless a newer value was queued meanwhile
-            if self._pending.get(channel_id) == value:
-                self._pending.pop(channel_id, None)
+            if self._pending.get(command) == value:
+                self._pending.pop(command, None)
 
             self._command_queue.task_done()
 
     @callback
-    def _on_feedback(self, channel_id: str, msg) -> None:
+    def _on_feedback(self, topic: str, msg) -> None:
         """Handle MQTT feedback from the heat pump."""
-        self.hp_state[channel_id] = msg.payload
-        _LOGGER.debug(
-            "HP feedback %s: %s", channel_id, msg.payload
-        )
+        self.hp_state[topic] = msg.payload
+        _LOGGER.debug("HP feedback %s: %s", topic, msg.payload)
 
     @callback
     def _on_lwt(self, msg) -> None:
@@ -256,30 +331,12 @@ class ScheduleCoordinator:
             self.heishamon_online = online
             self._notify_listeners()
             if online:
-                # Re-evaluate on reconnect
                 self.hass.async_create_task(self.async_evaluate_now())
 
     @property
-    def channel_defs(self) -> dict[str, dict]:
-        """Enabled channel definitions with per-entry option overrides.
-
-        Z1/Z2 heat request accept either a shift (-5..5) or a direct
-        temperature (20..max) depending on the heat pump configuration,
-        so the range is user-adjustable.
-        """
-        defs: dict[str, dict] = {}
-        options = self.entry.options
-        for channel_id in self.enabled_channels:
-            ch = CHANNELS.get(channel_id)
-            if ch is None:
-                continue
-            ch = dict(ch)
-            if channel_id in ("z1_heat_shift", "z2_heat_shift"):
-                ch["min"] = options.get("heat_request_min", ch["min"])
-                ch["max"] = options.get("heat_request_max", ch["max"])
-                ch["default"] = max(ch["min"], min(ch["max"], ch["default"]))
-            defs[channel_id] = ch
-        return defs
+    def active_blocks(self) -> list[dict]:
+        """Currently active blocks (for entities)."""
+        return list(self._active.values())
 
     def add_listener(self, listener) -> None:
         """Add a state update listener."""
@@ -294,38 +351,3 @@ class ScheduleCoordinator:
         """Notify all listeners of state change."""
         for listener in self._listeners:
             listener()
-
-    def get_current_scheduled_value(self, channel_id: str) -> Any | None:
-        """Get the currently scheduled value for a channel."""
-        return self.store.get_current_value(channel_id, dt_util.now())
-
-    def get_next_change(self, channel_id: str) -> dict | None:
-        """Get the next scheduled change for a channel."""
-        now = dt_util.now()
-        current_time = now.strftime("%H:%M")
-        weekday_idx = now.weekday()
-
-        schedule = self.store.get_schedule("default")
-        if not schedule:
-            return None
-
-        channel = schedule.get("channels", {}).get(channel_id)
-        if not channel or not channel.get("days"):
-            return None
-
-        days_data = channel["days"]
-
-        # Look through the next 7 days; offset 7 wraps to the same weekday
-        # of the next week (relevant when only one day has entries)
-        from .const import DAYS
-        for offset in range(8):
-            day_idx = (weekday_idx + offset) % 7
-            day_key = DAYS[day_idx]
-            entries = days_data.get(day_key, [])
-
-            for entry in entries:
-                if offset == 0 and entry["time"] <= current_time:
-                    continue
-                return {"day": day_key, "time": entry["time"], "value": entry["value"]}
-
-        return None

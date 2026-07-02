@@ -15,11 +15,7 @@ from homeassistant.config_entries import (
 from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
 
-from .const import CHANNELS, DEFAULT_CHANNELS, DEFAULT_MQTT_BASE, DOMAIN
-
-CHANNEL_OPTIONS = {
-    channel_id: ch["name"] for channel_id, ch in CHANNELS.items()
-}
+from .const import DEFAULT_MQTT_BASE, DOMAIN
 
 
 class HeishaMonSchedulerConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -40,19 +36,13 @@ class HeishaMonSchedulerConfigFlow(ConfigFlow, domain=DOMAIN):
 
             return self.async_create_entry(
                 title="HeishaMon Scheduler",
-                data={
-                    "mqtt_base_topic": user_input["mqtt_base_topic"],
-                    "channels": user_input.get("channels", DEFAULT_CHANNELS),
-                },
+                data={"mqtt_base_topic": user_input["mqtt_base_topic"]},
             )
 
         schema = vol.Schema({
             vol.Required(
                 "mqtt_base_topic", default=DEFAULT_MQTT_BASE
             ): cv.string,
-            vol.Required(
-                "channels", default=DEFAULT_CHANNELS
-            ): cv.multi_select(CHANNEL_OPTIONS),
         })
 
         return self.async_show_form(
@@ -85,19 +75,13 @@ class HeishaMonSchedulerOptionsFlow(OptionsFlow):
             "mqtt_base_topic",
             entry.data.get("mqtt_base_topic", DEFAULT_MQTT_BASE),
         )
-        current_channels = entry.options.get(
-            "channels", entry.data.get("channels", DEFAULT_CHANNELS)
-        )
         current_min = entry.options.get("heat_request_min", -5)
         current_max = entry.options.get("heat_request_max", 5)
 
         schema = vol.Schema({
             vol.Required("mqtt_base_topic", default=current_base): cv.string,
-            vol.Required(
-                "channels", default=current_channels
-            ): cv.multi_select(CHANNEL_OPTIONS),
-            # Z1/Z2 heat request: shift mode uses -5..5, direct
-            # temperature mode uses 20..max (pump dependent)
+            # Z1 heat request: shift mode uses -5..5, direct temperature
+            # mode uses 20..max (pump dependent)
             vol.Required(
                 "heat_request_min", default=current_min
             ): vol.All(vol.Coerce(int), vol.Range(min=-5, max=60)),

@@ -7,7 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import CHANNELS, DOMAIN
+from .const import ACTIONS, DOMAIN
 from .coordinator import ScheduleCoordinator
 
 
@@ -18,67 +18,53 @@ async def async_setup_entry(
 ) -> None:
     """Set up sensor entities."""
     coordinator: ScheduleCoordinator = hass.data[DOMAIN][entry.entry_id]
-
-    entities = []
-    for channel_id in coordinator.enabled_channels:
-        ch = CHANNELS.get(channel_id)
-        if ch:
-            entities.append(ScheduleSensor(coordinator, channel_id, ch))
-
-    async_add_entities(entities)
+    async_add_entities([ActiveBlocksSensor(coordinator)])
 
 
-class ScheduleSensor(SensorEntity):
-    """Sensor showing the current scheduled value for a channel."""
+class ActiveBlocksSensor(SensorEntity):
+    """Sensor showing which schedule actions are currently active."""
 
     _attr_has_entity_name = True
+    _attr_icon = "mdi:calendar-clock"
 
-    def __init__(
-        self,
-        coordinator: ScheduleCoordinator,
-        channel_id: str,
-        channel_def: dict,
-    ) -> None:
+    def __init__(self, coordinator: ScheduleCoordinator) -> None:
         self._coordinator = coordinator
-        self._channel_id = channel_id
-        self._channel_def = channel_def
-
-        self._attr_unique_id = f"{DOMAIN}_{channel_id}_scheduled"
-        self._attr_name = f"Scheduled {channel_def['name']}"
-        self._attr_icon = channel_def.get("icon", "mdi:calendar-clock")
-        if channel_def["value_type"] == "number":
-            self._attr_native_unit_of_measurement = channel_def.get("unit")
+        self._attr_unique_id = f"{DOMAIN}_active_blocks"
+        self._attr_name = "Active Actions"
 
     @property
-    def native_value(self):
-        """Return the current scheduled value."""
-        value = self._coordinator.get_current_scheduled_value(self._channel_id)
-        if value is None:
-            return None
-        ch = self._channel_def
-        if ch["value_type"] == "enum":
-            return ch["options"].get(value, str(value))
-        return value
+    def native_value(self) -> str:
+        """Return the active action names, or 'idle'."""
+        blocks = self._coordinator.active_blocks
+        if not blocks:
+            return "idle"
+        names = []
+        for block in blocks:
+            action = ACTIONS.get(block["action"], {})
+            name = action.get("name", block["action"])
+            if action.get("value_type") == "number":
+                name = f"{name} {block.get('value')}{action.get('unit', '')}"
+            elif action.get("value_type") == "enum":
+                name = f"{name} {action['options'].get(block.get('value'), '')}"
+            names.append(name)
+        return ", ".join(names)
 
     @property
     def extra_state_attributes(self):
         """Return extra attributes."""
-        attrs = {
-            "channel_id": self._channel_id,
+        return {
             "heishamon_online": self._coordinator.heishamon_online,
+            "active_blocks": [
+                {
+                    "id": b["id"],
+                    "action": b["action"],
+                    "value": b.get("value"),
+                    "start": b["start"],
+                    "end": b["end"],
+                }
+                for b in self._coordinator.active_blocks
+            ],
         }
-        hp_state = self._coordinator.hp_state.get(self._channel_id)
-        if hp_state is not None:
-            attrs["hp_actual"] = hp_state
-        last_sent = self._coordinator.last_sent.get(self._channel_id)
-        if last_sent is not None:
-            attrs["last_sent"] = last_sent
-        next_change = self._coordinator.get_next_change(self._channel_id)
-        if next_change:
-            attrs["next_change_day"] = next_change["day"]
-            attrs["next_change_time"] = next_change["time"]
-            attrs["next_change_value"] = next_change["value"]
-        return attrs
 
     async def async_added_to_hass(self) -> None:
         """Register listener."""

@@ -1,8 +1,9 @@
-"""HeishaMon Scheduler - Weekly schedule for Panasonic heat pumps."""
+"""HeishaMon Scheduler - Schedule blocks for Panasonic heat pumps."""
 
 from __future__ import annotations
 
 import logging
+import uuid
 from pathlib import Path
 
 import voluptuous as vol
@@ -17,7 +18,7 @@ from homeassistant.components.websocket_api import (
     websocket_command,
 )
 
-from .const import DAYS, DEFAULT_CHANNELS, DOMAIN, VERSION
+from .const import DAYS, DOMAIN, VERSION
 from .coordinator import ScheduleCoordinator
 from .storage import ScheduleStore
 
@@ -55,31 +56,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     store = ScheduleStore(hass)
     await store.async_load()
 
-    # Options (reconfigurable) take precedence over initial config data
     mqtt_base = entry.options.get(
         "mqtt_base_topic",
         entry.data.get("mqtt_base_topic", "panasonic_heat_pump"),
     )
-    enabled_channels = entry.options.get(
-        "channels", entry.data.get("channels", DEFAULT_CHANNELS)
-    )
 
-    coordinator = ScheduleCoordinator(
-        hass, entry, store, mqtt_base, enabled_channels
-    )
+    coordinator = ScheduleCoordinator(hass, entry, store, mqtt_base)
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
-    # Serve the bundled card and register WebSocket commands
     await _async_register_card(hass)
     _register_websocket_commands(hass)
 
-    # Set up platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Reload when options change
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
-    # Start the schedule evaluation loop
     await coordinator.async_start()
 
     return True
@@ -109,6 +100,64 @@ def _get_coordinator(hass: HomeAssistant) -> ScheduleCoordinator:
     raise ValueError("No HeishaMon Scheduler instance configured")
 
 
+def _valid_time(value: str) -> bool:
+    """Validate HH:MM in 10-minute steps (00:00-24:00)."""
+    parts = str(value).split(":")
+    if len(parts) != 2:
+        return False
+    try:
+        h, m = int(parts[0]), int(parts[1])
+    except ValueError:
+        return False
+    if h == 24 and m == 0:
+        return True
+    return 0 <= h <= 23 and 0 <= m <= 59 and m % 10 == 0
+
+
+def _validate_block(block: dict, action_defs: dict) -> dict | None:
+    """Validate and normalize a schedule block; None if invalid."""
+    action_id = block.get("action")
+    action = action_defs.get(action_id)
+    if action is None:
+        return None
+
+    days = [d for d in block.get("days", []) if d in DAYS]
+    start = block.get("start", "")
+    end = block.get("end", "")
+    if not days or not _valid_time(start) or not _valid_time(end):
+        return None
+    if start == end:
+        return None
+
+    value = block.get("value")
+    if action["value_type"] == "number":
+        try:
+            value = int(value)
+        except (ValueError, TypeError):
+            value = action["default"]
+        value = max(action["min"], min(action["max"], value))
+    elif action["value_type"] == "enum":
+        try:
+            value = int(value)
+        except (ValueError, TypeError):
+            value = action["default"]
+        if value not in action["options"]:
+            value = action["default"]
+    else:
+        value = None
+
+    block_id = block.get("id") or uuid.uuid4().hex[:12]
+    return {
+        "id": block_id,
+        "days": days,
+        "start": start,
+        "end": end,
+        "action": action_id,
+        "value": value,
+        "enabled": bool(block.get("enabled", True)),
+    }
+
+
 def _register_websocket_commands(hass: HomeAssistant) -> None:
     """Register WebSocket API commands."""
     if f"{DOMAIN}_ws_registered" in hass.data:
@@ -117,111 +166,55 @@ def _register_websocket_commands(hass: HomeAssistant) -> None:
 
     @websocket_command({
         vol.Required("type"): f"{DOMAIN}/get_schedule",
-        vol.Optional("schedule_id", default="default"): str,
     })
     @async_response
     async def ws_get_schedule(hass, connection, msg):
-        """Return the full schedule data."""
+        """Return blocks, action definitions and the enabled flag."""
         coordinator = _get_coordinator(hass)
-        schedule = coordinator.store.get_schedule(msg.get("schedule_id", "default"))
         connection.send_result(msg["id"], {
-            "schedule": schedule,
-            "channels": coordinator.channel_defs,
+            "enabled": coordinator.store.enabled,
+            "blocks": coordinator.store.get_blocks(),
+            "actions": coordinator.action_defs,
+            "active": [b["id"] for b in coordinator.active_blocks],
         })
 
     @websocket_command({
-        vol.Required("type"): f"{DOMAIN}/set_schedule",
-        vol.Required("channel_id"): str,
-        vol.Required("day"): vol.In(DAYS),
-        vol.Required("entries"): list,
-        vol.Optional("schedule_id", default="default"): str,
+        vol.Required("type"): f"{DOMAIN}/set_blocks",
+        vol.Required("blocks"): list,
     })
     @async_response
-    async def ws_set_schedule(hass, connection, msg):
-        """Update schedule entries for a channel/day."""
+    async def ws_set_blocks(hass, connection, msg):
+        """Replace the schedule block list."""
         coordinator = _get_coordinator(hass)
-        channel_id = msg["channel_id"]
-        day = msg["day"]
-        entries = msg["entries"]
-        schedule_id = msg.get("schedule_id", "default")
-
-        # Validate entries against the effective (option-adjusted) definition
-        channel_def = coordinator.channel_defs.get(channel_id)
-        if channel_def is None:
-            connection.send_error(msg["id"], "invalid_channel", f"Unknown channel: {channel_id}")
-            return
+        action_defs = coordinator.action_defs
 
         validated = []
-        for entry in entries:
-            time_str = entry.get("time", "")
-            value = entry.get("value")
-            if not time_str or value is None:
+        for block in msg["blocks"]:
+            if not isinstance(block, dict):
                 continue
-            # Validate time format
-            parts = time_str.split(":")
-            if len(parts) != 2:
-                continue
-            try:
-                h, m = int(parts[0]), int(parts[1])
-                if not (0 <= h <= 23 and m in (0, 30)):
-                    continue
-            except ValueError:
-                continue
-            # Validate value
-            if channel_def["value_type"] == "number":
-                try:
-                    value = int(value)
-                except (ValueError, TypeError):
-                    continue
-                if not (channel_def["min"] <= value <= channel_def["max"]):
-                    continue
-            elif channel_def["value_type"] == "enum":
-                try:
-                    value = int(value)
-                except (ValueError, TypeError):
-                    continue
-                if value not in channel_def["options"]:
-                    continue
-            validated.append({"time": time_str, "value": value})
+            valid = _validate_block(block, action_defs)
+            if valid is not None:
+                validated.append(valid)
 
-        coordinator.store.set_channel_day(schedule_id, channel_id, day, validated)
+        coordinator.store.set_blocks(validated)
         await coordinator.store.async_save()
-
-        # Re-evaluate immediately
         await coordinator.async_evaluate_now()
 
-        connection.send_result(msg["id"], {"success": True})
+        connection.send_result(msg["id"], {"blocks": validated})
 
     @websocket_command({
         vol.Required("type"): f"{DOMAIN}/set_enabled",
-        vol.Optional("schedule_id", default="default"): str,
-        vol.Optional("channel_id"): str,
         vol.Required("enabled"): bool,
     })
     @async_response
     async def ws_set_enabled(hass, connection, msg):
-        """Enable or disable a schedule or channel."""
+        """Enable or disable the whole schedule."""
         coordinator = _get_coordinator(hass)
-        schedule_id = msg.get("schedule_id", "default")
-        channel_id = msg.get("channel_id")
-        enabled = msg["enabled"]
-
-        schedule = coordinator.store.get_schedule(schedule_id)
-        if schedule is None:
-            connection.send_error(msg["id"], "not_found", "Schedule not found")
-            return
-
-        if channel_id:
-            channel = schedule.get("channels", {}).get(channel_id)
-            if channel:
-                channel["enabled"] = enabled
-        else:
-            schedule["enabled"] = enabled
-
+        coordinator.store.set_enabled(msg["enabled"])
         await coordinator.store.async_save()
         await coordinator.async_evaluate_now()
         connection.send_result(msg["id"], {"success": True})
 
     async_register_command(hass, ws_get_schedule)
-    async_register_command(hass, ws_set_schedule)
+    async_register_command(hass, ws_set_blocks)
     async_register_command(hass, ws_set_enabled)
