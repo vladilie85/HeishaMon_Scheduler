@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "HeishaMon Scheduler Einrichtung",
+        "description": "Konfiguriere die HeishaMon MQTT-Verbindung und Zeitplan-Kanäle.",
+        "data": {
+          "mqtt_base_topic": "MQTT Basis-Topic",
+          "channels": "Zeitplan-Kanäle"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "HeishaMon Scheduler Optionen",
+        "description": "MQTT-Verbindung, Kanäle und Wertebereiche anpassen. Z1/Z2 Heat Request akzeptiert je nach Wärmepumpen-Konfiguration eine Verschiebung (-5 bis 5) oder eine Direkt-Temperatur (20 bis max).",
+        "data": {
+          "mqtt_base_topic": "MQTT Basis-Topic",
+          "channels": "Zeitplan-Kanäle",
+          "heat_request_min": "Z1/Z2 Heat Request Minimum",
+          "heat_request_max": "Z1/Z2 Heat Request Maximum"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "domain": "heishamon_scheduler",
+  "name": "HeishaMon Scheduler",
+  "version": "1.1.0",
+  "documentation": "https://github.com/heishamon/heishamon-scheduler",
+  "dependencies": ["mqtt"],
+  "codeowners": [],
+  "config_flow": true,
+  "iot_class": "local_push",
+  "requirements": []
+}

@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "HeishaMon Scheduler Setup",
+        "description": "Configure your HeishaMon MQTT connection and schedule channels.",
+        "data": {
+          "mqtt_base_topic": "MQTT Base Topic",
+          "channels": "Schedule Channels"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "HeishaMon Scheduler Options",
+        "description": "Adjust the MQTT connection, channels and value ranges. Z1/Z2 heat request accepts a shift (-5 to 5) or a direct temperature (20 to max) depending on your heat pump configuration.",
+        "data": {
+          "mqtt_base_topic": "MQTT Base Topic",
+          "channels": "Schedule Channels",
+          "heat_request_min": "Z1/Z2 Heat Request Minimum",
+          "heat_request_max": "Z1/Z2 Heat Request Maximum"
+        }
+      }
+    }
+  }
+}
