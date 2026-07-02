@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="custom_components/heishamon_scheduler/brand/dark_icon.png">
+  <img src="custom_components/heishamon_scheduler/brand/icon.png" alt="HeishaMon Scheduler Logo" width="96" align="right">
+</picture>
+
 # HeishaMon Scheduler
 
 Zeitblock-Steuerung für Panasonic-Aquarea-Wärmepumpen über
@@ -5,11 +10,12 @@ Zeitblock-Steuerung für Panasonic-Aquarea-Wärmepumpen über
 mit visueller Timeline-Karte im Stil der bekannten Scheduler-Card.
 
 ![HA 2024.12+](https://img.shields.io/badge/Home%20Assistant-2024.12%2B-blue)
+![Version](https://img.shields.io/github/v/release/vladilie85/heishamon-scheduler?label=Version)
 
 ## Konzept
 
 Statt starrer Wochenpläne definierst du **Zeitblöcke**: „Werktags 07–12 Uhr
-Heizen“, „Täglich 12–14 Uhr Warmwasser“, „Nachts Flüstermodus Stufe 2“.
+Heizen“, „Täglich 12–14 Uhr Warmwasser mit 48 °C“.
 
 - **Innerhalb eines Blocks** sendet die Integration die gewählte Aktion per
   MQTT an HeishaMon und steuert damit die Wärmepumpe.
@@ -46,9 +52,11 @@ Die mitgelieferte Lovelace-Karte bietet:
 
 - Tag-Gruppen: **Täglich / Werktage / Wochenende / Individuell**
 - Timeline mit **ziehbaren Blockgrenzen** (10-Minuten-Raster, Touch-fähig)
-- Aktion und Wert (Slider/Auswahl) pro Block
-- Blöcke hinzufügen/entfernen, Speichern/Abbrechen
+- **Klick auf eine freie Stelle im Zeitstrahl legt einen neuen Block an**
+- Modus und Unteroption (Checkbox + Slider) pro Block
+- **Übersicht** aller Tag-Gruppen mit Mini-Zeitzeilen, klickbar zum Wechseln
 - Master-Schalter zum Pausieren des gesamten Zeitplans
+- Für Mobilgeräte optimiert (versetzte Zeitblasen, Touch-Bedienung)
 
 Die Karte wird von der Integration automatisch geladen — kein Kopieren nach
 `/config/www/`, kein Ressourcen-Eintrag nötig.
