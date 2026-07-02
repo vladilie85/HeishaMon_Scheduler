@@ -30,15 +30,20 @@ mit visueller Lovelace-Karte.
 
 ## Installation
 
-1. Repository als [HACS](https://hacs.xyz)-Custom-Repository hinzufügen oder den
-   Ordner `custom_components/heishamon_scheduler` nach `config/custom_components/`
+1. Repository als [HACS](https://hacs.xyz)-Custom-Repository (Typ: Integration)
+   hinzufügen und **HeishaMon Scheduler** herunterladen — oder den Ordner
+   `custom_components/heishamon_scheduler` nach `config/custom_components/`
    kopieren.
-2. Die Karte `www/heishamon-scheduler-card.js` nach `config/www/` kopieren und
-   unter *Einstellungen → Dashboards → Ressourcen* als
-   `/local/heishamon-scheduler-card.js` (Typ: Modul) eintragen.
-3. Home Assistant neu starten und die Integration **HeishaMon Scheduler** über
+2. Home Assistant neu starten und die Integration **HeishaMon Scheduler** über
    *Einstellungen → Geräte & Dienste* hinzufügen.
-4. Dem Dashboard eine Karte vom Typ **HeishaMon Scheduler** hinzufügen.
+3. Dem Dashboard eine Karte vom Typ **HeishaMon Scheduler** hinzufügen
+   (*Dashboard bearbeiten → Karte hinzufügen → nach „HeishaMon“ suchen*).
+
+Die Lovelace-Karte wird von der Integration mitgeliefert und **automatisch als
+Dashboard-Ressource registriert** — manuelles Kopieren ist nicht nötig. Nur bei
+YAML-verwalteten Dashboards muss die Ressource
+`/heishamon_scheduler/heishamon-scheduler-card.js` (Typ: Modul) selbst
+eingetragen werden.
 
 ## Konfiguration
 
