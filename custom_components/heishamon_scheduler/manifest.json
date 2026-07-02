@@ -1,7 +1,7 @@
 {
   "domain": "heishamon_scheduler",
   "name": "HeishaMon Scheduler",
-  "version": "2.2.5",
+  "version": "2.2.6",
   "documentation": "https://github.com/vladilie85/HeishaMon_Scheduler",
   "dependencies": ["frontend", "http", "mqtt"],
   "codeowners": [],

@@ -51,8 +51,9 @@ class ActiveBlocksSensor(SensorEntity):
     @property
     def extra_state_attributes(self):
         """Return extra attributes."""
+        c = self._coordinator
         return {
-            "heishamon_online": self._coordinator.heishamon_online,
+            "heishamon_online": c.heishamon_online,
             "active_blocks": [
                 {
                     "id": b["id"],
@@ -61,8 +62,12 @@ class ActiveBlocksSensor(SensorEntity):
                     "start": b["start"],
                     "end": b["end"],
                 }
-                for b in self._coordinator.active_blocks
+                for b in c.active_blocks
             ],
+            # Diagnostics: what the scheduler actually did/knows
+            "last_commands": list(reversed(c.command_log)),
+            "pending_commands": dict(c._pending),
+            "heat_pump_feedback": dict(c.hp_state),
         }
 
     async def async_added_to_hass(self) -> None:

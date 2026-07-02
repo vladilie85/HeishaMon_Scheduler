@@ -62,6 +62,8 @@ class ScheduleCoordinator:
         self._command_queue: asyncio.Queue = asyncio.Queue()
         self._pending: dict[str, Any] = {}
         self._last_command_time = 0.0
+        # Ring buffer of recently sent commands (for diagnostics)
+        self.command_log: list[dict] = []
         self._consumer_task: asyncio.Task | None = None
         self._unsub_timer = None
         self._unsub_start = None
@@ -202,10 +204,18 @@ class ScheduleCoordinator:
                 if self._block_active(block, day_key, prev_day_key, hhmm):
                     active[block["id"]] = block
 
+        # Commands the now-active blocks are going to send: an ending
+        # block must not "restore" those, otherwise adjacent blocks flap
+        # (e.g. Aus->Aus across midnight would power the pump on/off).
+        commands_now: set[str] = set()
+        for block in active.values():
+            for command, _value, _cmd_def in self._block_commands(block):
+                commands_now.add(command)
+
         # Restore blocks that ended (or were deleted/disabled)
         for block_id, block in list(self._active.items()):
             if block_id not in active:
-                await self._end_block(block)
+                await self._end_block(block, commands_now)
 
         # Apply new blocks; re-apply if the value was edited while active.
         # More general day sets apply first so specific blocks (fewer
@@ -276,8 +286,14 @@ class ScheduleCoordinator:
             await self._queue_command(command, value)
         self._applied[block["id"]] = [(c, v) for c, v, _ in commands]
 
-    async def _end_block(self, block: dict) -> None:
-        """Restore the pre-block state for an ended block."""
+    async def _end_block(
+        self, block: dict, skip_commands: frozenset | set = frozenset()
+    ) -> None:
+        """Restore the pre-block state for an ended block.
+
+        Commands in skip_commands are owned by a currently active block
+        and are not restored.
+        """
         applied = self._applied.pop(block["id"], None)
         action = self.action_defs.get(block["action"])
         if action is None:
@@ -302,6 +318,12 @@ class ScheduleCoordinator:
 
         for cmd_def in targets:
             command = cmd_def["command"]
+            if command in skip_commands:
+                _LOGGER.debug(
+                    "Block %s ended: %s is owned by an active block, "
+                    "skipping restore", block["id"], command,
+                )
+                continue
             if cmd_def["restore"] == "fixed":
                 restore = cmd_def["restore_value"]
             else:
@@ -322,7 +344,11 @@ class ScheduleCoordinator:
             await self._queue_command(command, restore)
 
         # If the block powered the pump on, power it off again last
-        if action.get("power_on") and POWER_COMMAND in baselines:
+        if (
+            action.get("power_on")
+            and POWER_COMMAND in baselines
+            and POWER_COMMAND not in skip_commands
+        ):
             _LOGGER.info(
                 "Block %s ended: powering heat pump off again", block["id"]
             )
@@ -379,13 +405,26 @@ class ScheduleCoordinator:
                 )
                 self._last_command_time = self.hass.loop.time()
                 _LOGGER.info("Sent MQTT command: %s = %s", topic, payload)
+                self._log_command(topic, payload, True)
             except Exception:
                 _LOGGER.exception("Failed to send MQTT command to %s", topic)
+                self._log_command(topic, payload, False)
 
             if self._pending.get(command) == value:
                 self._pending.pop(command, None)
 
             self._command_queue.task_done()
+
+    def _log_command(self, topic: str, payload: str, ok: bool) -> None:
+        """Append to the diagnostic command log (last 10 entries)."""
+        self.command_log.append({
+            "time": dt_util.now().strftime("%d.%m. %H:%M:%S"),
+            "topic": topic,
+            "payload": payload,
+            "ok": ok,
+        })
+        del self.command_log[:-10]
+        self._notify_listeners()
 
     @callback
     def _on_feedback(self, topic: str, msg) -> None:
