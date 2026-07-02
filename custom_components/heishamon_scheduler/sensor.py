@@ -42,10 +42,9 @@ class ActiveBlocksSensor(SensorEntity):
         for block in blocks:
             action = ACTIONS.get(block["action"], {})
             name = action.get("name", block["action"])
-            if action.get("value_type") == "number":
-                name = f"{name} {block.get('value')}{action.get('unit', '')}"
-            elif action.get("value_type") == "enum":
-                name = f"{name} {action['options'].get(block.get('value'), '')}"
+            sub = action.get("sub")
+            if sub is not None and block.get("value") is not None:
+                name = f"{name} {block['value']}{sub.get('unit', '')}"
             names.append(name)
         return ", ".join(names)
 

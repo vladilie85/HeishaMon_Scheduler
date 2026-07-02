@@ -70,19 +70,24 @@ class ScheduleCoordinator:
         options = self.entry.options
         for action_id, action in ACTIONS.items():
             action = dict(action)
-            if action_id == "z1_shift":
-                action["min"] = options.get("heat_request_min", action["min"])
-                action["max"] = options.get("heat_request_max", action["max"])
-                action["default"] = max(
-                    action["min"], min(action["max"], action["default"])
+            if action_id == "heat" and "sub" in action:
+                sub = dict(action["sub"])
+                sub["min"] = options.get("heat_request_min", sub["min"])
+                sub["max"] = options.get("heat_request_max", sub["max"])
+                sub["default"] = max(
+                    sub["min"], min(sub["max"], sub["default"])
                 )
+                action["sub"] = sub
             defs[action_id] = action
         return defs
 
     async def async_start(self) -> None:
         """Start the schedule evaluation loop."""
-        # Subscribe to all distinct feedback topics
+        # Subscribe to all distinct feedback topics (modes and subs)
         topics = {a["feedback_topic"] for a in ACTIONS.values()}
+        topics |= {
+            a["sub"]["feedback_topic"] for a in ACTIONS.values() if "sub" in a
+        }
         for topic in topics:
             unsub = await mqtt.async_subscribe(
                 self.hass, f"{self.mqtt_base}/{topic}",
@@ -156,12 +161,20 @@ class ScheduleCoordinator:
             prev_day_key in days and hhmm < end
         )
 
-    def _command_value(self, block: dict) -> Any:
-        """Resolve the value a block sends while active."""
-        action = self.action_defs.get(block["action"], {})
-        if action.get("value_type") == "none":
-            return action.get("apply_value")
-        return block.get("value", action.get("default"))
+    def _block_commands(self, block: dict) -> list[tuple[str, Any, dict]]:
+        """List of (command, value, cmd_def) tuples a block applies.
+
+        Always the mode command; additionally the sub command when the
+        block carries a value (e.g. heat shift, DHW target temperature).
+        """
+        action = self.action_defs.get(block["action"])
+        if action is None:
+            return []
+        commands = [(action["command"], action["apply_value"], action)]
+        sub = action.get("sub")
+        if sub is not None and block.get("value") is not None:
+            commands.append((sub["command"], block["value"], sub))
+        return commands
 
     async def _async_evaluate(self, now) -> None:
         """Evaluate all blocks: apply started, restore ended."""
@@ -189,73 +202,93 @@ class ScheduleCoordinator:
 
         # Apply new blocks; re-apply if the value was edited while active
         for block_id, block in active.items():
+            commands = [(c, v) for c, v, _ in self._block_commands(block)]
             if block_id not in self._active:
                 await self._start_block(block)
-            elif self._applied.get(block_id) != self._command_value(block):
+            elif self._applied.get(block_id) != commands:
                 await self._apply_block(block)
 
         self._active = active
         self._notify_listeners()
 
     async def _start_block(self, block: dict) -> None:
-        """Capture the baseline and apply a newly active block."""
-        action = self.action_defs[block["action"]]
+        """Capture baselines and apply a newly active block."""
+        baselines = self.store.get_baseline(block["id"])
+        if baselines is None or not isinstance(baselines, dict):
+            baselines = {}
 
-        if (
-            action["restore"] == "baseline"
-            and self.store.get_baseline(block["id"]) is None
-        ):
-            baseline = self._feedback_as_command_value(action)
-            if baseline is not None:
-                self.store.set_baseline(block["id"], baseline)
-                await self.store.async_save()
-                _LOGGER.debug(
-                    "Captured baseline for block %s (%s): %s",
-                    block["id"], block["action"], baseline,
-                )
+        changed = False
+        for command, _value, cmd_def in self._block_commands(block):
+            if cmd_def.get("restore") == "baseline" and command not in baselines:
+                captured = self._feedback_as_command_value(cmd_def)
+                if captured is not None:
+                    baselines[command] = captured
+                    changed = True
+                    _LOGGER.debug(
+                        "Captured baseline for block %s: %s = %s",
+                        block["id"], command, captured,
+                    )
+        if changed:
+            self.store.set_baseline(block["id"], baselines)
+            await self.store.async_save()
 
         await self._apply_block(block)
 
     async def _apply_block(self, block: dict) -> None:
-        """Send the block's command value."""
-        action = self.action_defs[block["action"]]
-        value = self._command_value(block)
-        if value is None:
-            return
-        _LOGGER.info(
-            "Block %s starts/changes: %s = %s",
-            block["id"], action["command"], value,
-        )
-        await self._queue_command(action["command"], value)
-        self._applied[block["id"]] = value
+        """Send the block's command values (mode + optional sub)."""
+        commands = self._block_commands(block)
+        for command, value, _cmd_def in commands:
+            _LOGGER.info(
+                "Block %s starts/changes: %s = %s",
+                block["id"], command, value,
+            )
+            await self._queue_command(command, value)
+        self._applied[block["id"]] = [(c, v) for c, v, _ in commands]
 
     async def _end_block(self, block: dict) -> None:
         """Restore the pre-block state for an ended block."""
-        self._applied.pop(block["id"], None)
+        applied = self._applied.pop(block["id"], None)
         action = self.action_defs.get(block["action"])
         if action is None:
             return
 
-        if action["restore"] == "fixed":
-            restore = action["restore_value"]
-        else:
-            restore = self.store.pop_baseline(block["id"])
-            await self.store.async_save()
-            if restore is None:
-                restore = action.get("restore_fallback")
+        baselines = self.store.pop_baseline(block["id"])
+        await self.store.async_save()
+        if baselines is not None and not isinstance(baselines, dict):
+            # Legacy schema: plain value for the mode command
+            baselines = {action["command"]: baselines}
+        baselines = baselines or {}
+        applied_commands = {c for c, _v in applied} if applied else None
+
+        targets = [action]
+        sub = action.get("sub")
+        if sub is not None and (
+            block.get("value") is not None
+            or sub["command"] in baselines
+            or (applied_commands and sub["command"] in applied_commands)
+        ):
+            targets.append(sub)
+
+        for cmd_def in targets:
+            command = cmd_def["command"]
+            if cmd_def["restore"] == "fixed":
+                restore = cmd_def["restore_value"]
+            else:
+                restore = baselines.get(command)
+                if restore is None:
+                    restore = cmd_def.get("restore_fallback")
             if restore is None:
                 _LOGGER.warning(
                     "Block %s ended but no baseline was captured for %s; "
                     "not sending a restore command",
-                    block["id"], action["command"],
+                    block["id"], command,
                 )
-                return
-
-        _LOGGER.info(
-            "Block %s ended: restoring %s = %s",
-            block["id"], action["command"], restore,
-        )
-        await self._queue_command(action["command"], restore)
+                continue
+            _LOGGER.info(
+                "Block %s ended: restoring %s = %s",
+                block["id"], command, restore,
+            )
+            await self._queue_command(command, restore)
 
     def _feedback_as_command_value(self, action: dict) -> Any | None:
         """Convert the current feedback state into a command value."""

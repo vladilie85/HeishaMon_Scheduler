@@ -19,17 +19,18 @@ Heizen“, „Täglich 12–14 Uhr Warmwasser“, „Nachts Flüstermodus Stufe 
   Blockstart merkt sich die Integration den Ist-Zustand der Pumpe (aus den
   HeishaMon-Feedback-Topics) und sendet ihn danach zurück.
 
-## Aktionen
+## Modi
 
-| Aktion | MQTT-Kommando | Nach Blockende |
-|---|---|---|
-| Heizen | `SetOperationMode` = Heat | vorheriger Modus |
-| Kühlen | `SetOperationMode` = Cool | vorheriger Modus |
-| Warmwasser | `SetForceDHW` = 1 | Force DHW aus |
-| Aus | `SetHeatpump` = 0 | Wärmepumpe an |
-| Heizkurve ± | `SetZ1HeatRequestTemperature` | vorheriger Shift (Fallback 0) |
-| WW-Temperatur | `SetDHWTemp` | vorherige Solltemperatur |
-| Flüstermodus | `SetQuietMode` | vorherige Stufe (Fallback Aus) |
+Jeder Block hat einen von vier Modi, optional mit einer Unteroption
+(wird nur gesendet, wenn aktiviert — sonst bleibt die Pumpen-Einstellung
+unverändert):
+
+| Modus | MQTT-Kommando | Unteroption | Nach Blockende |
+|---|---|---|---|
+| Heizen | `SetOperationMode` = Heat | Heizkurve ± (`SetZ1HeatRequestTemperature`, −5…+5 K) | vorheriger Modus + Shift |
+| Kühlen | `SetOperationMode` = Cool | Kühl-Temperatur (`SetZ1CoolRequestTemperature`) | vorheriger Modus + Temperatur |
+| Warmwasser | `SetOperationMode` = DHW | Soll-Temperatur (`SetDHWTemp`, 40–75 °C) | vorheriger Modus + Solltemperatur |
+| Aus | `SetHeatpump` = 0 | — | Wärmepumpe an |
 
 Kommandos werden gedrosselt (min. 30 s Abstand). Über das LWT-Topic erkennt
 die Integration, ob HeishaMon online ist; bei Reconnect wird sofort neu

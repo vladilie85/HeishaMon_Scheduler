@@ -35,9 +35,6 @@ const ACTION_COLORS = {
   cool: "#4fa8f6",
   dhw: "#26a69a",
   off: "#90a4ae",
-  z1_shift: "#7e57c2",
-  dhw_temp: "#ec6e85",
-  quiet: "#66bb6a",
 };
 
 function localizedDayLabels(lang) {
@@ -354,13 +351,24 @@ class HeishaMonSchedulerCard extends LitElement {
         flex: 1;
         accent-color: var(--primary-color);
       }
-      .value-row select {
-        background: var(--card-background-color, #fff);
-        color: var(--primary-text-color);
-        border: 1px solid var(--divider-color);
-        border-radius: 6px;
-        padding: 6px 10px;
-        font-size: 0.9em;
+      .sub-toggle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.88em;
+        white-space: nowrap;
+        cursor: pointer;
+        user-select: none;
+      }
+      .sub-toggle input {
+        accent-color: var(--primary-color);
+        width: 17px;
+        height: 17px;
+        cursor: pointer;
+      }
+      .sub-hint {
+        font-size: 0.82em;
+        color: var(--secondary-text-color);
       }
       .value-display {
         font-weight: 600;
@@ -515,11 +523,10 @@ class HeishaMonSchedulerCard extends LitElement {
   _blockLabel(block) {
     const action = this._actions?.[block.action];
     if (!action) return block.action;
-    if (action.value_type === "number") {
-      return `${block.value}${action.unit || ""}`;
-    }
-    if (action.value_type === "enum") {
-      return action.options?.[block.value] ?? action.name;
+    const sub = action.sub;
+    if (sub && block.value != null) {
+      const sign = sub.min < 0 && block.value > 0 ? "+" : "";
+      return `${action.name} ${sign}${block.value}${sub.unit || ""}`;
     }
     return action.name;
   }
@@ -570,11 +577,16 @@ class HeishaMonSchedulerCard extends LitElement {
     const action = this._actions?.[actionId];
     if (!block || !action) return;
     block.action = actionId;
-    if (action.value_type === "number" || action.value_type === "enum") {
-      block.value = action.default;
-    } else {
-      block.value = null;
-    }
+    block.value = null; // sub-setting off by default
+    this._dirty = true;
+    this.requestUpdate();
+  }
+
+  _toggleSub(checked) {
+    const block = this._selectedBlock();
+    const action = this._actions?.[block?.action];
+    if (!block || !action?.sub) return;
+    block.value = checked ? action.sub.default : null;
     this._dirty = true;
     this.requestUpdate();
   }
@@ -730,6 +742,8 @@ class HeishaMonSchedulerCard extends LitElement {
     const block = this._selectedBlock();
     if (!block || !this._actions) return html``;
     const action = this._actions[block.action];
+    const sub = action?.sub;
+    const subOn = sub && block.value != null;
 
     return html`
       <div class="section-label">Aktion</div>
@@ -749,40 +763,36 @@ class HeishaMonSchedulerCard extends LitElement {
           `
         )}
       </div>
-      ${action?.value_type === "number"
+      ${sub
         ? html`
             <div class="value-row">
-              <input
-                type="range"
-                min="${action.min}"
-                max="${action.max}"
-                step="${action.step || 1}"
-                .value="${String(block.value ?? action.default)}"
-                @input="${(e) => this._setValue(e.target.value)}"
-              />
-              <span class="value-display">
-                ${block.value ?? action.default}${action.unit || ""}
-              </span>
-            </div>
-          `
-        : ""}
-      ${action?.value_type === "enum"
-        ? html`
-            <div class="value-row">
-              <select
-                @change="${(e) => this._setValue(e.target.value)}"
-              >
-                ${Object.entries(action.options).map(
-                  ([val, label]) => html`
-                    <option
-                      value="${val}"
-                      ?selected="${Number(val) === (block.value ?? action.default)}"
-                    >
-                      ${label}
-                    </option>
+              <label class="sub-toggle">
+                <input
+                  type="checkbox"
+                  .checked="${subOn}"
+                  @change="${(e) => this._toggleSub(e.target.checked)}"
+                />
+                ${sub.name}
+              </label>
+              ${subOn
+                ? html`
+                    <input
+                      type="range"
+                      min="${sub.min}"
+                      max="${sub.max}"
+                      step="${sub.step || 1}"
+                      .value="${String(block.value)}"
+                      @input="${(e) => this._setValue(e.target.value)}"
+                    />
+                    <span class="value-display">
+                      ${sub.min < 0 && block.value > 0 ? "+" : ""}${block.value}${sub.unit || ""}
+                    </span>
                   `
-                )}
-              </select>
+                : html`
+                    <span class="sub-hint">
+                      Standard der Wärmepumpe bleibt unverändert
+                    </span>
+                  `}
             </div>
           `
         : ""}

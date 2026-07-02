@@ -130,22 +130,25 @@ def _validate_block(block: dict, action_defs: dict) -> dict | None:
     if start == end:
         return None
 
+    # Optional sub-setting (heat shift / target temperature); None means
+    # "leave the pump's own setting untouched"
     value = block.get("value")
-    if action["value_type"] == "number":
-        try:
-            value = int(value)
-        except (ValueError, TypeError):
-            value = action["default"]
-        value = max(action["min"], min(action["max"], value))
-    elif action["value_type"] == "enum":
-        try:
-            value = int(value)
-        except (ValueError, TypeError):
-            value = action["default"]
-        if value not in action["options"]:
-            value = action["default"]
-    else:
+    sub = action.get("sub")
+    if value is None or sub is None:
         value = None
+    elif sub["value_type"] == "number":
+        try:
+            value = int(value)
+        except (ValueError, TypeError):
+            value = sub["default"]
+        value = max(sub["min"], min(sub["max"], value))
+    elif sub["value_type"] == "enum":
+        try:
+            value = int(value)
+        except (ValueError, TypeError):
+            value = sub["default"]
+        if value not in sub["options"]:
+            value = sub["default"]
 
     # Only accept server-assigned ids (12 hex chars); anything else is a
     # temporary card id and gets a fresh unique one. Prevents duplicate
