@@ -12,6 +12,12 @@ mit visueller Timeline-Karte im Stil der bekannten Scheduler-Card.
 ![HA 2024.12+](https://img.shields.io/badge/Home%20Assistant-2024.12%2B-blue)
 ![Version](https://img.shields.io/github/v/release/vladilie85/HeishaMon_Scheduler?label=Version)
 
+## Screenshots
+
+| Desktop | Mobil |
+|---|---|
+| ![Karte auf dem Desktop](docs/screenshots/card-desktop.png) | ![Karte auf dem Smartphone](docs/screenshots/card-mobile.png) |
+
 ## Konzept
 
 Statt starrer Wochenpläne definierst du **Zeitblöcke**: „Werktags 07–12 Uhr

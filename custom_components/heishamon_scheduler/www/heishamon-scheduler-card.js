@@ -283,10 +283,11 @@ class HeishaMonSchedulerCard extends LitElement {
       }
       .toolbar {
         display: flex;
-        gap: 18px;
+        gap: 8px 18px;
         padding: 10px 16px 2px;
         align-items: center;
         justify-content: space-between;
+        flex-wrap: wrap;
       }
       .toolbar-hint {
         font-size: 0.8em;
@@ -360,9 +361,11 @@ class HeishaMonSchedulerCard extends LitElement {
         align-items: center;
         gap: 14px;
         padding: 10px 24px 2px;
+        flex-wrap: wrap;
       }
       .value-row input[type="range"] {
-        flex: 1;
+        flex: 1 1 140px;
+        min-width: 120px;
         accent-color: var(--primary-color);
       }
       .sub-toggle {
@@ -503,6 +506,12 @@ class HeishaMonSchedulerCard extends LitElement {
 
   setConfig(config) {
     this._config = config;
+  }
+
+  firstUpdated() {
+    // Re-render once after the first layout so measurements that depend
+    // on the real track width (bubble staggering) are correct
+    this.requestUpdate();
   }
 
   set hass(hass) {
@@ -800,12 +809,17 @@ class HeishaMonSchedulerCard extends LitElement {
       bubbleMap.set(t2m(b.start), b.start);
       bubbleMap.set(t2m(b.end), b.end);
     }
-    // Stagger bubbles into two rows when boundaries are close together
+    // Stagger bubbles into two rows when boundaries are close together.
+    // The collision threshold scales with the actual track width so
+    // narrow (mobile) layouts stagger earlier.
+    const trackEl = this.renderRoot?.querySelector(".track");
+    const trackWidth = trackEl?.offsetWidth || 600;
+    const minGap = Math.max(110, Math.round((52 / trackWidth) * 1440));
     const bubbles = [...bubbleMap.entries()]
       .sort((a, b) => a[0] - b[0])
       .map(([mins, label]) => ({ mins, label, row: 0 }));
     for (let i = 1; i < bubbles.length; i++) {
-      if (bubbles[i].mins - bubbles[i - 1].mins < 110) {
+      if (bubbles[i].mins - bubbles[i - 1].mins < minGap) {
         bubbles[i].row = bubbles[i - 1].row === 0 ? 1 : 0;
       }
     }
