@@ -531,21 +531,7 @@ class HeishaMonSchedulerCard extends LitElement {
     return action.name;
   }
 
-  _addBlock() {
-    const blocks = this._tabBlocks();
-    const gaps = [];
-    let cursor = 0;
-    for (const b of blocks) {
-      if (t2m(b.start) - cursor >= 30) gaps.push([cursor, t2m(b.start)]);
-      cursor = Math.max(cursor, t2m(b.end));
-    }
-    if (1440 - cursor >= 30) gaps.push([cursor, 1440]);
-    if (!gaps.length) return;
-
-    const gap = gaps.reduce((a, g) => (g[1] - g[0] > a[1] - a[0] ? g : a));
-    const start = gap[0];
-    const end = Math.min(start + 120, gap[1]);
-
+  _createBlockAt(start, end) {
     const tmpId = crypto.randomUUID
       ? `tmp-${crypto.randomUUID()}`
       : `tmp-${Date.now()}-${++this._newCounter}`;
@@ -562,6 +548,45 @@ class HeishaMonSchedulerCard extends LitElement {
     this._selectedId = block.id;
     this._dirty = true;
     this.requestUpdate();
+  }
+
+  _addBlock() {
+    const blocks = this._tabBlocks();
+    const gaps = [];
+    let cursor = 0;
+    for (const b of blocks) {
+      if (t2m(b.start) - cursor >= 30) gaps.push([cursor, t2m(b.start)]);
+      cursor = Math.max(cursor, t2m(b.end));
+    }
+    if (1440 - cursor >= 30) gaps.push([cursor, 1440]);
+    if (!gaps.length) return;
+
+    const gap = gaps.reduce((a, g) => (g[1] - g[0] > a[1] - a[0] ? g : a));
+    this._createBlockAt(gap[0], Math.min(gap[0] + 120, gap[1]));
+  }
+
+  _onTrackClick(e) {
+    // Only clicks on the empty track, not on blocks or handles
+    if (e.target !== e.currentTarget) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const raw = ((e.clientX - rect.left) / rect.width) * 1440;
+    const mins = clamp(Math.floor(raw / 10) * 10, 0, 1430);
+
+    // Find the free gap containing the clicked position
+    let gapStart = 0;
+    let gapEnd = 1440;
+    for (const b of this._tabBlocks()) {
+      const bs = t2m(b.start);
+      const be = t2m(b.end);
+      if (bs <= mins && mins < be) return; // inside an existing block
+      if (be <= mins) gapStart = Math.max(gapStart, be);
+      if (bs > mins) gapEnd = Math.min(gapEnd, bs);
+    }
+    if (gapEnd - gapStart < 20) return;
+
+    const start = clamp(mins, gapStart, gapEnd - 20);
+    const end = Math.min(start + 120, gapEnd);
+    this._createBlockAt(start, end);
   }
 
   _removeBlock() {
@@ -680,7 +705,7 @@ class HeishaMonSchedulerCard extends LitElement {
 
     return html`
       <div class="timeline">
-        <div class="track">
+        <div class="track" @click="${this._onTrackClick}">
           ${showNow
             ? html`<div class="now-line" style="left: ${pct(nowMins)}%"></div>`
             : ""}
@@ -731,8 +756,9 @@ class HeishaMonSchedulerCard extends LitElement {
       </div>
       ${blocks.length === 0
         ? html`<div class="hint">
-            Noch keine Zeitblöcke für diese Tage — mit „Hinzufügen“ anlegen.
-            Außerhalb der Blöcke gelten die HeishaMon-Einstellungen.
+            Noch keine Zeitblöcke für diese Tage — auf eine freie Stelle in
+            der Zeitleiste tippen oder „Hinzufügen“ nutzen. Außerhalb der
+            Blöcke gelten die HeishaMon-Einstellungen.
           </div>`
         : ""}
     `;
