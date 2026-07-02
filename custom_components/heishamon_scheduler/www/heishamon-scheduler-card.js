@@ -201,6 +201,15 @@ class HeishaMonSchedulerCard extends LitElement {
         cursor: pointer;
         overflow: hidden;
         white-space: nowrap;
+        container-type: inline-size;
+      }
+      .block .bl {
+        display: none;
+      }
+      @container (min-width: 58px) {
+        .block .bl {
+          display: inline;
+        }
       }
       .block.selected {
         box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.85),
@@ -449,6 +458,28 @@ class HeishaMonSchedulerCard extends LitElement {
         padding: 32px 16px;
         text-align: center;
         color: var(--secondary-text-color);
+      }
+      @media (max-width: 480px) {
+        .bubble {
+          font-size: 0.68em;
+          padding: 2px 6px;
+        }
+        .handle {
+          width: 22px;
+          height: 22px;
+          font-size: 0.65em;
+        }
+        .ov-label {
+          flex: 0 0 92px;
+        }
+        .timeline {
+          margin-left: 14px;
+          margin-right: 14px;
+        }
+        .axis {
+          margin-left: 14px;
+          margin-right: 14px;
+        }
       }
     `;
   }
@@ -764,18 +795,28 @@ class HeishaMonSchedulerCard extends LitElement {
 
   _renderTimeline() {
     const blocks = this._tabBlocks();
-    const bubbles = new Map();
+    const bubbleMap = new Map();
     for (const b of blocks) {
-      bubbles.set(t2m(b.start), b.start);
-      bubbles.set(t2m(b.end), b.end);
+      bubbleMap.set(t2m(b.start), b.start);
+      bubbleMap.set(t2m(b.end), b.end);
     }
+    // Stagger bubbles into two rows when boundaries are close together
+    const bubbles = [...bubbleMap.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([mins, label]) => ({ mins, label, row: 0 }));
+    for (let i = 1; i < bubbles.length; i++) {
+      if (bubbles[i].mins - bubbles[i - 1].mins < 110) {
+        bubbles[i].row = bubbles[i - 1].row === 0 ? 1 : 0;
+      }
+    }
+    const staggered = bubbles.some((b) => b.row === 1);
 
     const today = DAYS[(new Date().getDay() + 6) % 7];
     const showNow = this._tabDays().includes(today);
     const nowMins = new Date().getHours() * 60 + new Date().getMinutes();
 
     return html`
-      <div class="timeline">
+      <div class="timeline" style="margin-top: ${staggered ? 72 : 42}px">
         <div class="track" @click="${this._onTrackClick}">
           ${showNow
             ? html`<div class="now-line" style="left: ${pct(nowMins)}%"></div>`
@@ -793,7 +834,7 @@ class HeishaMonSchedulerCard extends LitElement {
                   this.requestUpdate();
                 }}"
               >
-                ${end - start >= 90 ? this._blockLabel(b) : ""}
+                <span class="bl">${this._blockLabel(b)}</span>
               </div>
             `;
           })}
@@ -809,9 +850,14 @@ class HeishaMonSchedulerCard extends LitElement {
               @pointerdown="${(e) => this._onHandleDown(e, b.id, "end")}"
             >&#x2039;&#x203a;</div>
           `)}
-          ${[...bubbles.entries()].map(
-            ([mins, label]) => html`
-              <div class="bubble" style="left: ${pct(mins)}%">${label}</div>
+          ${bubbles.map(
+            (b) => html`
+              <div
+                class="bubble"
+                style="left: clamp(26px, ${pct(b.mins)}%, calc(100% - 26px)); top: ${b.row === 1 ? -62 : -34}px"
+              >
+                ${b.label}
+              </div>
             `
           )}
         </div>
