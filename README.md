@@ -10,7 +10,7 @@ Zeitblock-Steuerung für Panasonic-Aquarea-Wärmepumpen über
 mit visueller Timeline-Karte im Stil der bekannten Scheduler-Card.
 
 ![HA 2024.12+](https://img.shields.io/badge/Home%20Assistant-2024.12%2B-blue)
-![Version](https://img.shields.io/github/v/release/vladilie85/heishamon-scheduler?label=Version)
+![Version](https://img.shields.io/github/v/release/vladilie85/HeishaMon_Scheduler?label=Version)
 
 ## Konzept
 
