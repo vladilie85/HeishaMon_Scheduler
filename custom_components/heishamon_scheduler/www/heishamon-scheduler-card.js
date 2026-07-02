@@ -180,11 +180,11 @@ class HeishaMonSchedulerCard extends LitElement {
       }
       .timeline {
         position: relative;
-        margin: 40px 24px 4px;
+        margin: 42px 20px 4px;
       }
       .track {
         position: relative;
-        height: 46px;
+        height: 54px;
         border-radius: 10px;
         background: color-mix(in srgb, var(--primary-color, #03a9f4) 14%, transparent);
         touch-action: none;
@@ -213,8 +213,8 @@ class HeishaMonSchedulerCard extends LitElement {
       .handle {
         position: absolute;
         top: 50%;
-        width: 30px;
-        height: 30px;
+        width: 26px;
+        height: 26px;
         border-radius: 50%;
         background: #fff;
         color: #444;
@@ -267,7 +267,7 @@ class HeishaMonSchedulerCard extends LitElement {
       .axis {
         position: relative;
         height: 18px;
-        margin: 6px 24px 0;
+        margin: 6px 20px 0;
         font-size: 0.72em;
         color: var(--secondary-text-color);
       }
@@ -539,8 +539,11 @@ class HeishaMonSchedulerCard extends LitElement {
     const start = gap[0];
     const end = Math.min(start + 120, gap[1]);
 
+    const tmpId = crypto.randomUUID
+      ? `tmp-${crypto.randomUUID()}`
+      : `tmp-${Date.now()}-${++this._newCounter}`;
     const block = {
-      id: `new-${++this._newCounter}`,
+      id: tmpId,
       days: [...this._tabDays()],
       start: m2t(start),
       end: m2t(end),
@@ -883,6 +886,16 @@ class HeishaMonSchedulerCard extends LitElement {
 
   getCardSize() {
     return 6;
+  }
+
+  // Sections view (HA 2024.11+): default to full row width
+  getGridOptions() {
+    return { columns: 12, min_columns: 6, rows: "auto" };
+  }
+
+  // Older sections layout API
+  getLayoutOptions() {
+    return { grid_columns: 4, grid_min_columns: 2 };
   }
 }
 

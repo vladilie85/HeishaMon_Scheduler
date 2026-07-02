@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from pathlib import Path
 
@@ -146,7 +147,12 @@ def _validate_block(block: dict, action_defs: dict) -> dict | None:
     else:
         value = None
 
-    block_id = block.get("id") or uuid.uuid4().hex[:12]
+    # Only accept server-assigned ids (12 hex chars); anything else is a
+    # temporary card id and gets a fresh unique one. Prevents duplicate
+    # ids like "new-1" from surviving a save.
+    block_id = block.get("id")
+    if not isinstance(block_id, str) or not re.fullmatch(r"[0-9a-f]{12}", block_id):
+        block_id = uuid.uuid4().hex[:12]
     return {
         "id": block_id,
         "days": days,
@@ -189,12 +195,18 @@ def _register_websocket_commands(hass: HomeAssistant) -> None:
         action_defs = coordinator.action_defs
 
         validated = []
+        seen_ids: set[str] = set()
         for block in msg["blocks"]:
             if not isinstance(block, dict):
                 continue
             valid = _validate_block(block, action_defs)
-            if valid is not None:
-                validated.append(valid)
+            if valid is None:
+                continue
+            # Deduplicate ids defensively (e.g. legacy duplicate data)
+            if valid["id"] in seen_ids:
+                valid["id"] = uuid.uuid4().hex[:12]
+            seen_ids.add(valid["id"])
+            validated.append(valid)
 
         coordinator.store.set_blocks(validated)
         await coordinator.store.async_save()
