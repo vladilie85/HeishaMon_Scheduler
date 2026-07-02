@@ -1,7 +1,7 @@
 """Constants for HeishaMon Scheduler."""
 
 DOMAIN = "heishamon_scheduler"
-VERSION = "2.1.2"  # keep in sync with manifest.json
+VERSION = "2.1.3"  # keep in sync with manifest.json
 DEFAULT_MQTT_BASE = "panasonic_heat_pump"
 STORAGE_KEY = "heishamon_scheduler.schedules"
 STORAGE_VERSION = 1
@@ -16,6 +16,11 @@ DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 # Operating_Mode_State (TOP4) reports 9 states while SetOperationMode
 # (SET9) accepts 7: Auto(Heat)/Auto(Cool) both map to command "Auto".
 OPMODE_STATE_TO_COMMAND = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 2, 8: 6}
+
+# Heat pump on/off: mode blocks power the pump on if needed (and restore
+# the previous power state when the block ends).
+POWER_COMMAND = "SetHeatpump"
+POWER_FEEDBACK = "main/Heatpump_State"
 
 # Schedule block actions: four operating modes. Each block applies its
 # mode command while active; heat/cool/dhw additionally offer an optional
@@ -32,6 +37,7 @@ ACTIONS = {
         "apply_value": 0,
         "restore": "baseline",
         "state_to_command": OPMODE_STATE_TO_COMMAND,
+        "power_on": True,
         "icon": "mdi:fire",
         "sub": {
             "name": "Heizkurve ± (Heat Shift)",
@@ -54,6 +60,7 @@ ACTIONS = {
         "apply_value": 1,
         "restore": "baseline",
         "state_to_command": OPMODE_STATE_TO_COMMAND,
+        "power_on": True,
         "icon": "mdi:snowflake",
         "sub": {
             "name": "Kühl-Temperatur",
@@ -76,6 +83,7 @@ ACTIONS = {
         "apply_value": 3,
         "restore": "baseline",
         "state_to_command": OPMODE_STATE_TO_COMMAND,
+        "power_on": True,
         "icon": "mdi:water-boiler",
         "sub": {
             "name": "Soll-Temperatur",

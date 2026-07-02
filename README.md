@@ -32,6 +32,10 @@ unverändert):
 | Warmwasser | `SetOperationMode` = DHW | Soll-Temperatur (`SetDHWTemp`, 40–75 °C) | vorheriger Modus + Solltemperatur |
 | Aus | `SetHeatpump` = 0 | — | Wärmepumpe an |
 
+Ist die Wärmepumpe beim Blockstart **ausgeschaltet**, schalten
+Heizen/Kühlen/Warmwasser sie automatisch ein (`SetHeatpump` = 1) — und am
+Blockende wieder aus, da der vorherige Zustand wiederhergestellt wird.
+
 Kommandos werden gedrosselt (min. 30 s Abstand). Über das LWT-Topic erkennt
 die Integration, ob HeishaMon online ist; bei Reconnect wird sofort neu
 ausgewertet.

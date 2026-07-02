@@ -16,7 +16,14 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.util import dt as dt_util
 
-from .const import ACTIONS, DAYS, MIN_COMMAND_INTERVAL, STARTUP_GRACE
+from .const import (
+    ACTIONS,
+    DAYS,
+    MIN_COMMAND_INTERVAL,
+    POWER_COMMAND,
+    POWER_FEEDBACK,
+    STARTUP_GRACE,
+)
 from .storage import ScheduleStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -212,12 +219,30 @@ class ScheduleCoordinator:
         self._notify_listeners()
 
     async def _start_block(self, block: dict) -> None:
-        """Capture baselines and apply a newly active block."""
+        """Capture baselines, power on if needed, apply a new block."""
+        action = self.action_defs.get(block["action"], {})
         baselines = self.store.get_baseline(block["id"])
         if baselines is None or not isinstance(baselines, dict):
             baselines = {}
 
         changed = False
+
+        # Mode blocks are pointless while the pump is powered off: turn
+        # it on and remember to power it off again when the block ends.
+        if action.get("power_on") and POWER_COMMAND not in baselines:
+            power_state = self.hp_state.get(POWER_FEEDBACK)
+            try:
+                power_off = power_state is not None and int(float(power_state)) == 0
+            except (ValueError, TypeError):
+                power_off = False
+            if power_off:
+                baselines[POWER_COMMAND] = 0
+                changed = True
+                _LOGGER.info(
+                    "Block %s: heat pump is off, powering on", block["id"]
+                )
+                await self._queue_command(POWER_COMMAND, 1)
+
         for command, _value, cmd_def in self._block_commands(block):
             if cmd_def.get("restore") == "baseline" and command not in baselines:
                 captured = self._feedback_as_command_value(cmd_def)
@@ -289,6 +314,13 @@ class ScheduleCoordinator:
                 block["id"], command, restore,
             )
             await self._queue_command(command, restore)
+
+        # If the block powered the pump on, power it off again last
+        if action.get("power_on") and POWER_COMMAND in baselines:
+            _LOGGER.info(
+                "Block %s ended: powering heat pump off again", block["id"]
+            )
+            await self._queue_command(POWER_COMMAND, baselines[POWER_COMMAND])
 
     def _feedback_as_command_value(self, action: dict) -> Any | None:
         """Convert the current feedback state into a command value."""
