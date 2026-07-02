@@ -207,8 +207,14 @@ class ScheduleCoordinator:
             if block_id not in active:
                 await self._end_block(block)
 
-        # Apply new blocks; re-apply if the value was edited while active
-        for block_id, block in active.items():
+        # Apply new blocks; re-apply if the value was edited while active.
+        # More general day sets apply first so specific blocks (fewer
+        # days) win overlapping commands: Individuell > Werktage/
+        # Wochenende > Täglich.
+        for block in sorted(
+            active.values(), key=lambda b: -len(b.get("days", []))
+        ):
+            block_id = block["id"]
             commands = [(c, v) for c, v, _ in self._block_commands(block)]
             if block_id not in self._active:
                 await self._start_block(block)

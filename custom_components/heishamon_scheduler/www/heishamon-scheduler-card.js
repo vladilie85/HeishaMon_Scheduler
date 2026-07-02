@@ -406,6 +406,45 @@ class HeishaMonSchedulerCard extends LitElement {
         font-size: 0.8em;
         color: var(--secondary-text-color);
       }
+      .overview-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 3px 20px;
+        cursor: pointer;
+      }
+      .overview-row:hover .ov-label {
+        color: var(--primary-color, #03a9f4);
+      }
+      .ov-label {
+        flex: 0 0 150px;
+        font-size: 0.78em;
+        color: var(--secondary-text-color);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .overview-row.current .ov-label {
+        color: var(--primary-color, #03a9f4);
+        font-weight: 600;
+      }
+      .ov-track {
+        flex: 1;
+        position: relative;
+        height: 16px;
+        border-radius: 5px;
+        background: color-mix(in srgb, var(--primary-color, #03a9f4) 10%, transparent);
+      }
+      .overview-row.current .ov-track {
+        outline: 2px solid var(--primary-color, #03a9f4);
+        outline-offset: 1px;
+      }
+      .ov-block {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        border-radius: 4px;
+      }
       .loading {
         padding: 32px 16px;
         text-align: center;
@@ -519,6 +558,48 @@ class HeishaMonSchedulerCard extends LitElement {
     return (this._blocks || [])
       .filter((b) => this._sameDays(b.days, days))
       .sort((a, b) => t2m(a.start) - t2m(b.start));
+  }
+
+  _groups() {
+    const groups = new Map();
+    for (const b of this._blocks || []) {
+      const key = DAYS.filter((d) => b.days.includes(d)).join(",");
+      if (!groups.has(key)) groups.set(key, { days: b.days, blocks: [] });
+      groups.get(key).blocks.push(b);
+    }
+    // Sort: daily, workdays, weekend, then custom sets
+    const order = (days) => {
+      if (this._sameDays(days, DAY_PRESETS.daily)) return 0;
+      if (this._sameDays(days, DAY_PRESETS.workdays)) return 1;
+      if (this._sameDays(days, DAY_PRESETS.weekend)) return 2;
+      return 3;
+    };
+    return [...groups.values()].sort((a, b) => order(a.days) - order(b.days));
+  }
+
+  _groupLabel(days) {
+    if (this._sameDays(days, DAY_PRESETS.daily)) return "Täglich";
+    if (this._sameDays(days, DAY_PRESETS.workdays)) {
+      return `Werktage (${this._dayLabels.mon}–${this._dayLabels.fri})`;
+    }
+    if (this._sameDays(days, DAY_PRESETS.weekend)) {
+      return `Wochenende (${this._dayLabels.sat}–${this._dayLabels.sun})`;
+    }
+    return DAYS.filter((d) => days.includes(d))
+      .map((d) => this._dayLabels[d])
+      .join(", ");
+  }
+
+  _selectGroup(days) {
+    if (this._sameDays(days, DAY_PRESETS.daily)) this._tab = "daily";
+    else if (this._sameDays(days, DAY_PRESETS.workdays)) this._tab = "workdays";
+    else if (this._sameDays(days, DAY_PRESETS.weekend)) this._tab = "weekend";
+    else {
+      this._tab = "custom";
+      this._customDays = DAYS.filter((d) => days.includes(d));
+    }
+    this._selectedId = null;
+    this.requestUpdate();
   }
 
   _selectedBlock() {
@@ -754,6 +835,45 @@ class HeishaMonSchedulerCard extends LitElement {
     `;
   }
 
+  _renderOverview() {
+    const groups = this._groups();
+    if (groups.length < 2) return html``;
+    const currentDays = this._tabDays();
+
+    return html`
+      <div class="section-label">Übersicht</div>
+      ${groups.map((g) => {
+        const current = this._sameDays(g.days, currentDays);
+        return html`
+          <div
+            class="overview-row ${current ? "current" : ""}"
+            @click="${() => this._selectGroup(g.days)}"
+            title="Zum Bearbeiten anklicken"
+          >
+            <span class="ov-label">${this._groupLabel(g.days)}</span>
+            <div class="ov-track">
+              ${g.blocks.map((b) => {
+                const start = t2m(b.start);
+                const end = Math.max(t2m(b.end), start + 10);
+                return html`
+                  <div
+                    class="ov-block"
+                    style="left: ${pct(start)}%; width: ${pct(end - start)}%; background: ${ACTION_COLORS[b.action] || "#888"}"
+                    title="${this._blockLabel(b)} ${b.start}–${b.end}"
+                  ></div>
+                `;
+              })}
+            </div>
+          </div>
+        `;
+      })}
+      <div class="hint">
+        Alle Pläne laufen gleichzeitig. Bei Überschneidungen führt der
+        spezifischere Plan: Individuell vor Werktage/Wochenende vor Täglich.
+      </div>
+    `;
+  }
+
   _renderActionEditor() {
     const block = this._selectedBlock();
     if (!block || !this._actions) return html``;
@@ -887,6 +1007,8 @@ class HeishaMonSchedulerCard extends LitElement {
         </div>
 
         ${this._renderActionEditor()}
+
+        ${this._renderOverview()}
 
         ${this._dirty
           ? html`

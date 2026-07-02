@@ -87,8 +87,11 @@ Beim Einrichten wird das MQTT-Basis-Topic gewählt (Standard:
 
 ## Hinweise
 
-- Überlappen sich Blöcke aus verschiedenen Tag-Gruppen (z. B. „Täglich“ und
-  „Werktage“) mit demselben Kommando, gewinnt der zuletzt angelegte Block.
+- Alle Tag-Gruppen laufen gleichzeitig; die Tabs in der Karte sind nur ein
+  Bearbeitungs-Filter. Überlappen sich Blöcke aus verschiedenen Gruppen,
+  führt der **spezifischere** Plan (weniger Tage): Individuell vor
+  Werktage/Wochenende vor Täglich. Die Übersicht unten in der Karte zeigt
+  alle Gruppen mit ihren Zeitzeilen.
 - Beim Update von Version 1.x startet der Zeitplan leer (neues Datenmodell);
   die alten Wochenplan-Daten bleiben im Storage erhalten, werden aber nicht
   mehr verwendet. Verwaiste Entitäten der 1.x-Kanäle können in HA gelöscht
