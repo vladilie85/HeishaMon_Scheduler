@@ -89,6 +89,15 @@ Die Karte wird von der Integration automatisch geladen — kein Kopieren nach
 3. Dem Dashboard eine Karte vom Typ **HeishaMon Scheduler** hinzufügen
    (*Dashboard bearbeiten → Karte hinzufügen → nach „HeishaMon“ suchen*).
 
+> [!NOTE]
+> Das mitgelieferte Integrations-Icon liegt unter
+> `custom_components/heishamon_scheduler/brand/` und wird ab Home Assistant
+> 2026.3 nach dem Herunterladen und Neustart lokal angezeigt. Solange das
+> Repository in HACS noch als **Neu** und nicht heruntergeladen geführt wird,
+> kann Home Assistant diese lokale Datei noch nicht lesen; HACS zeigt dann den
+> Platzhalter „icon not available“. Nach der Installation gegebenenfalls in
+> HACS **Informationen aktualisieren** und die Oberfläche neu laden.
+
 ## Konfiguration
 
 Beim Einrichten wird das MQTT-Basis-Topic gewählt (Standard:
