@@ -1,7 +1,7 @@
 """Constants for HeishaMon Scheduler."""
 
 DOMAIN = "heishamon_scheduler"
-VERSION = "2.2.7"  # keep in sync with manifest.json
+VERSION = "2.2.8"  # keep in sync with manifest.json
 DEFAULT_MQTT_BASE = "panasonic_heat_pump"
 STORAGE_KEY = "heishamon_scheduler.schedules"
 STORAGE_VERSION = 1
