@@ -42,15 +42,16 @@ unverändert):
 | Heizen | `SetOperationMode` = Heat | Heizkurve ± (`SetZ1HeatRequestTemperature`, −5…+5 K) | vorheriger Modus + Shift |
 | Kühlen | `SetOperationMode` = Cool | Kühl-Temperatur (`SetZ1CoolRequestTemperature`) | vorheriger Modus + Temperatur |
 | Warmwasser | `SetOperationMode` = DHW | Soll-Temperatur (`SetDHWTemp`, 40–75 °C) | vorheriger Modus + Solltemperatur |
-| Aus | `SetHeatpump` = 0 | — | Wärmepumpe an |
+| Aus | `SetHeatpump` = 0 | — | vorheriger Ein/Aus-Zustand |
 
 Ist die Wärmepumpe beim Blockstart **ausgeschaltet**, schalten
 Heizen/Kühlen/Warmwasser sie automatisch ein (`SetHeatpump` = 1) — und am
 Blockende wieder aus, da der vorherige Zustand wiederhergestellt wird.
 
-Kommandos werden gedrosselt (min. 30 s Abstand). Über das LWT-Topic erkennt
-die Integration, ob HeishaMon online ist; bei Reconnect wird sofort neu
-ausgewertet.
+Kommandos werden geordnet mit mindestens 5 s Abstand gesendet. Die
+Rückmelde-Topics werden jede Minute mit dem aktiven Zeitplan abgeglichen;
+abweichende Zustände werden erneut gesetzt. Über das LWT-Topic erkennt die
+Integration, ob HeishaMon online ist; bei Reconnect wird sofort neu ausgewertet.
 
 ## Karte
 

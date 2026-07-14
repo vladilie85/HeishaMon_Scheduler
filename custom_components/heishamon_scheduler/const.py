@@ -1,11 +1,14 @@
 """Constants for HeishaMon Scheduler."""
 
 DOMAIN = "heishamon_scheduler"
-VERSION = "2.2.8"  # keep in sync with manifest.json
+VERSION = "2.2.9"  # keep in sync with manifest.json
 DEFAULT_MQTT_BASE = "panasonic_heat_pump"
 STORAGE_KEY = "heishamon_scheduler.schedules"
 STORAGE_VERSION = 1
-MIN_COMMAND_INTERVAL = 30  # seconds between MQTT commands
+# HeishaMon waits at most two seconds for a serial response and buffers
+# additional commands. Five seconds keeps commands ordered without making
+# a mode transition take one or two minutes.
+MIN_COMMAND_INTERVAL = 5  # seconds between MQTT commands
 
 # Seconds to wait after startup before the first evaluation, so retained
 # MQTT feedback/LWT messages can arrive first.
@@ -103,8 +106,7 @@ ACTIONS = {
         "command": "SetHeatpump",
         "feedback_topic": "main/Heatpump_State",
         "apply_value": 0,
-        "restore": "fixed",
-        "restore_value": 1,
+        "restore": "baseline",
         "icon": "mdi:power",
     },
 }

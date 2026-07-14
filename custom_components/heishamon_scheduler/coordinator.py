@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
 from typing import Any
 
 from homeassistant.components import mqtt
@@ -12,7 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import (
     async_call_later,
-    async_track_time_interval,
+    async_track_time_change,
 )
 from homeassistant.util import dt as dt_util
 
@@ -68,6 +67,7 @@ class ScheduleCoordinator:
         self._unsub_timer = None
         self._unsub_start = None
         self._unsub_mqtt: list = []
+        self._evaluation_lock = asyncio.Lock()
 
         # Listeners for entity updates
         self._listeners: list = []
@@ -111,9 +111,10 @@ class ScheduleCoordinator:
         )
         self._unsub_mqtt.append(unsub)
 
-        # Per-minute evaluation
-        self._unsub_timer = async_track_time_interval(
-            self.hass, self._async_evaluate, timedelta(seconds=60)
+        # Evaluate on the actual minute boundary. A free-running interval
+        # would drift relative to schedule times by up to 59 seconds.
+        self._unsub_timer = async_track_time_change(
+            self.hass, self._async_evaluate, second=0
         )
 
         # Command consumer
@@ -185,13 +186,46 @@ class ScheduleCoordinator:
             commands.append((sub["command"], block["value"], sub))
         return commands
 
+    @staticmethod
+    def _ordered_active(active: dict[str, dict]) -> list[dict]:
+        """Return blocks in application order, most specific last."""
+        return sorted(
+            active.values(), key=lambda block: -len(block.get("days", []))
+        )
+
+    def _desired_commands(
+        self, ordered_active: list[dict]
+    ) -> dict[str, tuple[Any, dict, dict]]:
+        """Build the winning value and owner for every active command.
+
+        Power is an implicit command of every mode block. This makes the
+        direct transition between mode blocks own SetHeatpump as well as
+        SetOperationMode, so an ending block cannot switch the pump off.
+        """
+        desired: dict[str, tuple[Any, dict, dict]] = {}
+        power_def = self.action_defs["off"]
+        for block in ordered_active:
+            action = self.action_defs.get(block["action"])
+            if action is None:
+                continue
+            if action.get("power_on"):
+                desired[POWER_COMMAND] = (1, power_def, block)
+            for command, value, cmd_def in self._block_commands(block):
+                desired[command] = (value, cmd_def, block)
+        return desired
+
     async def _async_evaluate(self, now) -> None:
         """Evaluate all blocks: apply started, restore ended."""
+        async with self._evaluation_lock:
+            await self._async_evaluate_locked(now)
+
+    async def _async_evaluate_locked(self, now) -> None:
+        """Evaluate all blocks while holding the evaluation lock."""
         if not self.heishamon_online:
             _LOGGER.debug("HeishaMon offline, skipping evaluation")
             return
 
-        now = dt_util.now()
+        now = now or dt_util.now()
         hhmm = now.strftime("%H:%M")
         day_key = DAYS[now.weekday()]
         prev_day_key = DAYS[(now.weekday() - 1) % 7]
@@ -204,38 +238,88 @@ class ScheduleCoordinator:
                 if self._block_active(block, day_key, prev_day_key, hhmm):
                     active[block["id"]] = block
 
-        # Commands the now-active blocks are going to send: an ending
-        # block must not "restore" those, otherwise adjacent blocks flap
-        # (e.g. Aus->Aus across midnight would power the pump on/off).
-        commands_now: set[str] = set()
-        for block in active.values():
-            for command, _value, _cmd_def in self._block_commands(block):
-                commands_now.add(command)
+        ordered_active = self._ordered_active(active)
+        desired = self._desired_commands(ordered_active)
+        commands_now = set(desired)
+        membership_changed = set(active) != set(self._active)
+        values_changed = any(
+            self._applied.get(block["id"])
+            != [
+                (command, value)
+                for command, value, _ in self._block_commands(block)
+            ]
+            for block in ordered_active
+        )
 
-        # Restore blocks that ended (or were deleted/disabled)
+        # Ended blocks only restore commands that no active block owns.
+        # Queue those restores after the new desired state, so a mode
+        # transition is never delayed behind an old sub-setting restore.
+        deferred_baselines: dict[str, tuple[Any, dict]] = {}
+        restores: list[tuple[str, Any]] = []
         for block_id, block in list(self._active.items()):
             if block_id not in active:
-                await self._end_block(block, commands_now)
+                block_baselines, block_restores = await self._end_block(
+                    block, commands_now
+                )
+                for command, value in block_baselines.items():
+                    if (
+                        command in deferred_baselines
+                        and deferred_baselines[command][0] != value
+                    ):
+                        _LOGGER.warning(
+                            "Conflicting baselines for %s while blocks end: "
+                            "%s / %s",
+                            command,
+                            deferred_baselines[command][0],
+                            value,
+                        )
+                    else:
+                        deferred_baselines[command] = (value, block)
+                restores.extend(block_restores)
 
-        # Apply new blocks; re-apply if the value was edited while active.
-        # More general day sets apply first so specific blocks (fewer
-        # days) win overlapping commands: Individuell > Werktage/
-        # Wochenende > Täglich.
-        for block in sorted(
-            active.values(), key=lambda b: -len(b.get("days", []))
-        ):
-            block_id = block["id"]
-            commands = [(c, v) for c, v, _ in self._block_commands(block)]
-            if block_id not in self._active:
-                await self._start_block(block)
-            elif self._applied.get(block_id) != commands:
-                await self._apply_block(block)
+        # Preserve original states across adjacent/overlapping blocks.
+        # Each final command owner receives the oldest available baseline
+        # and will restore it when the complete ownership chain ends.
+        handoffs: dict[
+            str, tuple[dict, dict[str, tuple[Any, dict]]]
+        ] = {}
+        for command, (value, source) in deferred_baselines.items():
+            target = desired.get(command)
+            if target is None:
+                continue
+            owner = target[2]
+            handoff = handoffs.setdefault(owner["id"], (owner, {}))
+            handoff[1][command] = (value, source)
+        for owner, baselines in handoffs.values():
+            await self._handoff_baselines(owner, baselines)
+
+        for block in ordered_active:
+            if block["id"] not in self._active:
+                await self._prepare_block(block)
+
+        # At a boundary, send only the final winning value for each
+        # command. Between boundaries, compare feedback and reassert a
+        # value that HeishaMon did not apply.
+        await self._queue_desired_commands(
+            desired, force=membership_changed or values_changed
+        )
+        for command, value in restores:
+            if command not in desired:
+                await self._queue_command(command, value)
+
+        self._applied = {
+            block["id"]: [
+                (command, value)
+                for command, value, _ in self._block_commands(block)
+            ]
+            for block in ordered_active
+        }
 
         self._active = active
         self._notify_listeners()
 
-    async def _start_block(self, block: dict) -> None:
-        """Capture baselines, power on if needed, apply a new block."""
+    async def _prepare_block(self, block: dict) -> None:
+        """Capture the state that must be restored after a new block."""
         action = self.action_defs.get(block["action"], {})
         baselines = self.store.get_baseline(block["id"])
         if baselines is None or not isinstance(baselines, dict):
@@ -243,21 +327,18 @@ class ScheduleCoordinator:
 
         changed = False
 
-        # Mode blocks are pointless while the pump is powered off: turn
-        # it on and remember to power it off again when the block ends.
-        if action.get("power_on") and POWER_COMMAND not in baselines:
+        # A mode block owns power while it is active. If it starts while
+        # the pump is off, keep that state as the baseline for the end of
+        # the complete adjacent block chain.
+        if action.get("power_on"):
             power_state = self.hp_state.get(POWER_FEEDBACK)
             try:
                 power_off = power_state is not None and int(float(power_state)) == 0
             except (ValueError, TypeError):
                 power_off = False
-            if power_off:
+            if power_off and POWER_COMMAND not in baselines:
                 baselines[POWER_COMMAND] = 0
                 changed = True
-                _LOGGER.info(
-                    "Block %s: heat pump is off, powering on", block["id"]
-                )
-                await self._queue_command(POWER_COMMAND, 1)
 
         for command, _value, cmd_def in self._block_commands(block):
             if cmd_def.get("restore") == "baseline" and command not in baselines:
@@ -273,31 +354,74 @@ class ScheduleCoordinator:
             self.store.set_baseline(block["id"], baselines)
             await self.store.async_save()
 
-        await self._apply_block(block)
-
-    async def _apply_block(self, block: dict) -> None:
-        """Send the block's command values (mode + optional sub)."""
-        commands = self._block_commands(block)
-        for command, value, _cmd_def in commands:
-            _LOGGER.info(
-                "Block %s starts/changes: %s = %s",
-                block["id"], command, value,
+    async def _handoff_baselines(
+        self, block: dict, values: dict[str, tuple[Any, dict]]
+    ) -> None:
+        """Move original command states to the next active owner."""
+        baselines = self.store.get_baseline(block["id"])
+        if not isinstance(baselines, dict):
+            baselines = {}
+        for command, (value, source) in values.items():
+            previous = baselines.get(command)
+            # A more general source block underlies a more specific owner,
+            # so its baseline predates the owner's. In the opposite case,
+            # the continuing general owner already has the older baseline.
+            source_is_more_general = len(source.get("days", [])) > len(
+                block.get("days", [])
             )
+            if previous is not None and not source_is_more_general:
+                continue
+            if previous is not None and previous != value:
+                _LOGGER.debug(
+                    "Handing earlier baseline for %s to block %s: %s -> %s",
+                    command, block["id"], previous, value,
+                )
+            baselines[command] = value
+        self.store.set_baseline(block["id"], baselines)
+        await self.store.async_save()
+
+    async def _queue_desired_commands(
+        self,
+        desired: dict[str, tuple[Any, dict, dict]],
+        *,
+        force: bool,
+    ) -> None:
+        """Queue winning commands and repair mismatching feedback state."""
+        for command, (value, cmd_def, owner) in desired.items():
+            current = self._feedback_as_command_value(cmd_def)
+            try:
+                expected = int(float(value))
+            except (ValueError, TypeError):
+                expected = value
+            if not force and (current is None or current == expected):
+                continue
+            if not force:
+                _LOGGER.warning(
+                    "Feedback mismatch for %s: expected %s, got %s; retrying",
+                    command, expected, current,
+                )
+            else:
+                _LOGGER.info(
+                    "Block %s target: %s = %s",
+                    owner["id"], command, value,
+                )
             await self._queue_command(command, value)
-        self._applied[block["id"]] = [(c, v) for c, v, _ in commands]
 
     async def _end_block(
         self, block: dict, skip_commands: frozenset | set = frozenset()
-    ) -> None:
+    ) -> tuple[dict[str, Any], list[tuple[str, Any]]]:
         """Restore the pre-block state for an ended block.
 
         Commands in skip_commands are owned by a currently active block
-        and are not restored.
+        and are not restored. Their baselines are returned so the next
+        owner can restore them when the ownership chain ends.
         """
+        deferred_baselines: dict[str, Any] = {}
+        restores: list[tuple[str, Any]] = []
         applied = self._applied.pop(block["id"], None)
         action = self.action_defs.get(block["action"])
         if action is None:
-            return
+            return deferred_baselines, restores
 
         baselines = self.store.pop_baseline(block["id"])
         await self.store.async_save()
@@ -319,6 +443,8 @@ class ScheduleCoordinator:
         for cmd_def in targets:
             command = cmd_def["command"]
             if command in skip_commands:
+                if command in baselines:
+                    deferred_baselines[command] = baselines[command]
                 _LOGGER.debug(
                     "Block %s ended: %s is owned by an active block, "
                     "skipping restore", block["id"], command,
@@ -341,18 +467,21 @@ class ScheduleCoordinator:
                 "Block %s ended: restoring %s = %s",
                 block["id"], command, restore,
             )
-            await self._queue_command(command, restore)
+            restores.append((command, restore))
 
-        # If the block powered the pump on, power it off again last
-        if (
-            action.get("power_on")
-            and POWER_COMMAND in baselines
-            and POWER_COMMAND not in skip_commands
-        ):
-            _LOGGER.info(
-                "Block %s ended: powering heat pump off again", block["id"]
-            )
-            await self._queue_command(POWER_COMMAND, baselines[POWER_COMMAND])
+        # Power is an implicit command of mode blocks and therefore is
+        # not included in targets above.
+        if action.get("power_on") and POWER_COMMAND in baselines:
+            if POWER_COMMAND in skip_commands:
+                deferred_baselines[POWER_COMMAND] = baselines[POWER_COMMAND]
+            else:
+                _LOGGER.info(
+                    "Block %s ended: restoring %s = %s",
+                    block["id"], POWER_COMMAND, baselines[POWER_COMMAND],
+                )
+                restores.append((POWER_COMMAND, baselines[POWER_COMMAND]))
+
+        return deferred_baselines, restores
 
     def _feedback_as_command_value(self, action: dict) -> Any | None:
         """Convert the current feedback state into a command value."""
@@ -395,6 +524,12 @@ class ScheduleCoordinator:
                 wait = MIN_COMMAND_INTERVAL - elapsed
                 _LOGGER.debug("Throttling MQTT command, waiting %.1fs", wait)
                 await asyncio.sleep(wait)
+
+            # A boundary evaluation can supersede a command while this
+            # consumer is throttling. Do not publish that stale value.
+            if self._pending.get(command) != value:
+                self._command_queue.task_done()
+                continue
 
             topic = f"{self.mqtt_base}/commands/{command}"
             payload = str(value)
