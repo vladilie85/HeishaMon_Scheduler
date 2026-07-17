@@ -23,6 +23,19 @@ class FakeEntry:
 
     options: dict[str, Any] = {}
 
+    def __init__(self) -> None:
+        self.background_task_name: str | None = None
+
+    def async_create_background_task(
+        self,
+        _hass,
+        target,
+        name: str,
+    ) -> asyncio.Task:
+        """Create and record a config-entry background task."""
+        self.background_task_name = name
+        return asyncio.create_task(target, name=name)
+
 
 class FakeStore:
     """In-memory schedule store."""
@@ -244,3 +257,22 @@ def test_feedback_mismatch_is_retried_without_a_block_transition() -> None:
     evaluate(instance, datetime(2026, 7, 14, 13, 15))
 
     assert queued_commands(instance) == [(MODE_COMMAND, 3)]
+
+
+def test_command_consumer_is_a_named_config_entry_background_task() -> None:
+    """The permanent consumer must not block Home Assistant startup."""
+    instance, _store = coordinator([])
+
+    async def start_and_stop() -> None:
+        await instance.async_start()
+        assert instance.entry.background_task_name == (
+            "HeishaMon Scheduler command consumer"
+        )
+        assert instance._consumer_task is not None
+        assert instance._consumer_task.get_name() == (
+            "HeishaMon Scheduler command consumer"
+        )
+        await instance.async_stop()
+        assert instance._consumer_task.done()
+
+    asyncio.get_event_loop().run_until_complete(start_and_stop())

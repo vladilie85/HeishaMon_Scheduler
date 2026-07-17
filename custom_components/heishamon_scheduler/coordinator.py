@@ -118,8 +118,10 @@ class ScheduleCoordinator:
         )
 
         # Command consumer
-        self._consumer_task = self.hass.async_create_task(
-            self._async_command_consumer()
+        self._consumer_task = self.entry.async_create_background_task(
+            self.hass,
+            self._async_command_consumer(),
+            "HeishaMon Scheduler command consumer",
         )
 
         # Delay the initial evaluation so retained feedback/LWT messages
