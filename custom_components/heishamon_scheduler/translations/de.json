@@ -8,6 +8,9 @@
           "mqtt_base_topic": "MQTT Basis-Topic"
         }
       }
+    },
+    "error": {
+      "invalid_topic": "Das Topic darf nicht leer sein, nicht mit \"/\" beginnen und keine Wildcards \"+\" oder \"#\" enthalten."
     }
   },
   "options": {
@@ -21,6 +24,10 @@
           "heat_request_max": "Z1 Heat Request Maximum"
         }
       }
+    },
+    "error": {
+      "invalid_topic": "Das Topic darf nicht leer sein, nicht mit \"/\" beginnen und keine Wildcards \"+\" oder \"#\" enthalten.",
+      "min_not_below_max": "Das Minimum muss kleiner als das Maximum sein."
     }
   }
 }

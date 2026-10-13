@@ -64,6 +64,8 @@ Die mitgelieferte Lovelace-Karte bietet:
 - **Übersicht** aller Tag-Gruppen mit Mini-Zeitzeilen, klickbar zum Wechseln
 - Master-Schalter zum Pausieren des gesamten Zeitplans
 - Für Mobilgeräte optimiert (versetzte Zeitblasen, Touch-Bedienung)
+- Ändern dürfen nur **Administratoren**; andere Nutzer sehen den Zeitplan
+  schreibgeschützt
 
 Die Karte wird von der Integration automatisch geladen — kein Kopieren nach
 `/config/www/`, kein Ressourcen-Eintrag nötig.
@@ -116,7 +118,24 @@ Beim Einrichten wird das MQTT-Basis-Topic gewählt (Standard:
   führt der **spezifischere** Plan (weniger Tage): Individuell vor
   Werktage/Wochenende vor Täglich. Die Übersicht unten in der Karte zeigt
   alle Gruppen mit ihren Zeitzeilen.
+- Endet ein Block, während Home Assistant nicht läuft (Neustart, Update),
+  wird der vorherige Zustand beim nächsten Start nachträglich
+  wiederhergestellt.
 - Beim Update von Version 1.x startet der Zeitplan leer (neues Datenmodell);
   die alten Wochenplan-Daten bleiben im Storage erhalten, werden aber nicht
   mehr verwendet. Verwaiste Entitäten der 1.x-Kanäle können in HA gelöscht
   werden.
+
+## Tests
+
+```bash
+python -m pytest tests
+```
+
+Die Integrationstests in `tests_ha/` laufen gegen ein echtes Home Assistant
+(Python ≥ 3.13):
+
+```bash
+pip install -r tests_ha/requirements.txt
+python -m pytest tests_ha -o asyncio_mode=auto
+```

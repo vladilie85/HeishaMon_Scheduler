@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 import logging
 from typing import Any
 
@@ -56,6 +57,8 @@ class ScheduleCoordinator:
         # Active blocks (id -> block) and last applied value per block
         self._active: dict[str, dict] = {}
         self._applied: dict[str, Any] = {}
+        # Whether blocks with stored baselines were recovered after a restart
+        self._recovered = False
 
         # Command queue, deduplicated per MQTT command
         self._command_queue: asyncio.Queue = asyncio.Queue()
@@ -98,9 +101,11 @@ class ScheduleCoordinator:
             a["sub"]["feedback_topic"] for a in ACTIONS.values() if "sub" in a
         }
         for topic in topics:
+            # partial keeps the @callback marker, so feedback is handled in
+            # the event loop; a lambda would run in an executor thread.
             unsub = await mqtt.async_subscribe(
                 self.hass, f"{self.mqtt_base}/{topic}",
-                lambda msg, t=topic: self._on_feedback(t, msg),
+                partial(self._on_feedback, topic),
                 qos=0,
             )
             self._unsub_mqtt.append(unsub)
@@ -225,7 +230,12 @@ class ScheduleCoordinator:
         """Evaluate all blocks while holding the evaluation lock."""
         if not self.heishamon_online:
             _LOGGER.debug("HeishaMon offline, skipping evaluation")
+            # Entities still reflect e.g. a toggled master switch
+            self._notify_listeners()
             return
+
+        if not self._recovered:
+            self._recover_started_blocks()
 
         now = now or dt_util.now()
         hhmm = now.strftime("%H:%M")
@@ -319,6 +329,23 @@ class ScheduleCoordinator:
 
         self._active = active
         self._notify_listeners()
+
+    def _recover_started_blocks(self) -> None:
+        """Treat blocks with a stored baseline as started before a restart.
+
+        Baselines persist while a block is active. A block that ended while
+        Home Assistant was down is therefore ended on the first evaluation
+        and restores the pump; a still-active block keeps its baseline.
+        """
+        self._recovered = True
+        for block in self.store.get_blocks():
+            if block["id"] in self._active:
+                continue
+            if self.store.get_baseline(block["id"]) is not None:
+                _LOGGER.debug(
+                    "Recovering block %s started before restart", block["id"]
+                )
+                self._active[block["id"]] = block
 
     async def _prepare_block(self, block: dict) -> None:
         """Capture the state that must be restored after a new block."""

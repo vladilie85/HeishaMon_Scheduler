@@ -85,6 +85,7 @@ class HeishaMonSchedulerCard extends LitElement {
       _customDays: { type: Array },
       _selectedId: { type: String },
       _dirty: { type: Boolean },
+      _error: { type: String },
     };
   }
 
@@ -413,6 +414,19 @@ class HeishaMonSchedulerCard extends LitElement {
         background: var(--primary-color, #03a9f4);
         color: var(--text-primary-color, #fff);
       }
+      .error {
+        margin: 4px 16px 10px;
+        padding: 8px 12px;
+        border-radius: 8px;
+        background: rgba(219, 68, 55, 0.12);
+        color: var(--error-color, #db4437);
+        font-size: 0.85em;
+      }
+      .readonly-note {
+        padding: 4px 16px 10px;
+        font-size: 0.8em;
+        color: var(--secondary-text-color);
+      }
       .hint {
         padding: 4px 24px 10px;
         font-size: 0.8em;
@@ -497,6 +511,7 @@ class HeishaMonSchedulerCard extends LitElement {
     this._customDays = ["mon"];
     this._selectedId = null;
     this._dirty = false;
+    this._error = null;
     this._drag = null;
     this._newCounter = 0;
     this._dayLabels = localizedDayLabels();
@@ -527,6 +542,18 @@ class HeishaMonSchedulerCard extends LitElement {
     return this._hass;
   }
 
+  // Changing the schedule requires an administrator (enforced by the
+  // backend); other users get a read-only view.
+  get _readOnly() {
+    return this._hass?.user?.is_admin === false;
+  }
+
+  _showError(prefix, err) {
+    console.error(prefix, err);
+    this._error = `${prefix}: ${err?.message || err}`;
+    this.requestUpdate();
+  }
+
   async _load() {
     if (!this._hass) return;
     try {
@@ -539,14 +566,15 @@ class HeishaMonSchedulerCard extends LitElement {
       this._enabled = result.enabled;
       this._dirty = false;
       this._selectedId = null;
+      this._error = null;
       this.requestUpdate();
     } catch (e) {
-      console.error("Failed to load schedule:", e);
+      this._showError("Zeitplan konnte nicht geladen werden", e);
     }
   }
 
   async _save() {
-    if (!this._hass || !this._blocks) return;
+    if (!this._hass || !this._blocks || this._readOnly) return;
     try {
       const result = await this._hass.callWS({
         type: "heishamon_scheduler/set_blocks",
@@ -556,9 +584,10 @@ class HeishaMonSchedulerCard extends LitElement {
       this._orig = JSON.parse(JSON.stringify(this._blocks));
       this._dirty = false;
       this._selectedId = null;
+      this._error = null;
       this.requestUpdate();
     } catch (e) {
-      console.error("Failed to save schedule:", e);
+      this._showError("Zeitplan konnte nicht gespeichert werden", e);
     }
   }
 
@@ -566,6 +595,7 @@ class HeishaMonSchedulerCard extends LitElement {
     this._blocks = JSON.parse(JSON.stringify(this._orig));
     this._dirty = false;
     this._selectedId = null;
+    this._error = null;
     this.requestUpdate();
   }
 
@@ -577,8 +607,10 @@ class HeishaMonSchedulerCard extends LitElement {
         enabled: enabled,
       });
       this._enabled = enabled;
+      this._error = null;
     } catch (err) {
-      console.error("Failed to toggle schedule:", err);
+      e.target.checked = this._enabled;
+      this._showError("Zeitplan konnte nicht umgeschaltet werden", err);
     }
     this.requestUpdate();
   }
@@ -678,7 +710,7 @@ class HeishaMonSchedulerCard extends LitElement {
 
   _onTrackClick(e) {
     // Only clicks on the empty track, not on blocks or handles
-    if (e.target !== e.currentTarget) return;
+    if (this._readOnly || e.target !== e.currentTarget) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const raw = ((e.clientX - rect.left) / rect.width) * 1440;
     const mins = clamp(Math.floor(raw / 10) * 10, 0, 1430);
@@ -701,7 +733,7 @@ class HeishaMonSchedulerCard extends LitElement {
   }
 
   _removeBlock() {
-    if (!this._selectedId) return;
+    if (this._readOnly || !this._selectedId) return;
     this._blocks = this._blocks.filter((b) => b.id !== this._selectedId);
     this._selectedId = null;
     this._dirty = true;
@@ -750,6 +782,7 @@ class HeishaMonSchedulerCard extends LitElement {
   // --- Handle dragging -------------------------------------------------
 
   _onHandleDown(e, blockId, edge) {
+    if (this._readOnly) return;
     e.preventDefault();
     e.stopPropagation();
     const track = this.renderRoot.querySelector(".track");
@@ -852,7 +885,7 @@ class HeishaMonSchedulerCard extends LitElement {
               </div>
             `;
           })}
-          ${blocks.map((b) => html`
+          ${this._readOnly ? "" : blocks.map((b) => html`
             <div
               class="handle"
               style="left: ${pct(t2m(b.start))}%"
@@ -936,7 +969,7 @@ class HeishaMonSchedulerCard extends LitElement {
 
   _renderActionEditor() {
     const block = this._selectedBlock();
-    if (!block || !this._actions) return html``;
+    if (!block || !this._actions || this._readOnly) return html``;
     const action = this._actions[block.action];
     const sub = action?.sub;
     const subOn = sub && block.value != null;
@@ -1010,6 +1043,7 @@ class HeishaMonSchedulerCard extends LitElement {
             <input
               type="checkbox"
               .checked="${this._enabled}"
+              ?disabled="${this._readOnly}"
               @change="${this._toggleEnabled}"
             />
             ${this._enabled ? "Aktiv" : "Pausiert"}
@@ -1053,24 +1087,34 @@ class HeishaMonSchedulerCard extends LitElement {
         <div class="section-label">Zeit</div>
         ${this._renderTimeline()}
 
-        <div class="toolbar">
-          <span class="toolbar-hint">
-            Klick auf eine freie Stelle im Zeitstrahl fügt einen Block hinzu
-          </span>
-          <button
-            class="icon-btn"
-            ?disabled="${!this._selectedId}"
-            @click="${this._removeBlock}"
-          >
-            <span class="circle">&#8722;</span> Entfernen
-          </button>
-        </div>
+        ${this._readOnly
+          ? html`
+              <div class="readonly-note">
+                Nur Administratoren können den Zeitplan ändern.
+              </div>
+            `
+          : html`
+              <div class="toolbar">
+                <span class="toolbar-hint">
+                  Klick auf eine freie Stelle im Zeitstrahl fügt einen Block hinzu
+                </span>
+                <button
+                  class="icon-btn"
+                  ?disabled="${!this._selectedId}"
+                  @click="${this._removeBlock}"
+                >
+                  <span class="circle">&#8722;</span> Entfernen
+                </button>
+              </div>
+            `}
+
+        ${this._error ? html`<div class="error">${this._error}</div>` : ""}
 
         ${this._renderActionEditor()}
 
         ${this._renderOverview()}
 
-        ${this._dirty
+        ${this._dirty && !this._readOnly
           ? html`
               <div class="footer">
                 <button class="btn" @click="${this._cancel}">Abbrechen</button>

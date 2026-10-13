@@ -276,3 +276,37 @@ def test_command_consumer_is_a_named_config_entry_background_task() -> None:
         assert instance._consumer_task.done()
 
     asyncio.get_event_loop().run_until_complete(start_and_stop())
+
+
+def test_block_ended_during_restart_restores_baseline() -> None:
+    """A stored baseline is restored when its block ended while HA was down."""
+    dhw = block("dhw", "dhw", "12:00", "14:00", value=45)
+    instance, store = coordinator([dhw])
+    store.set_baseline(dhw["id"], {MODE_COMMAND: 0, "SetDHWTemp": 48})
+    instance.hp_state = {
+        POWER_FEEDBACK: "1",
+        MODE_FEEDBACK: "3",
+        "main/DHW_Target_Temp": "45",
+    }
+
+    evaluate(instance, datetime(2026, 7, 14, 14, 30))
+
+    assert queued_commands(instance) == [(MODE_COMMAND, 0), ("SetDHWTemp", 48)]
+    assert store.get_baseline(dhw["id"]) is None
+
+
+def test_block_active_across_restart_keeps_original_baseline() -> None:
+    """A block still active after a restart must not recapture its state."""
+    dhw = block("dhw", "dhw", "12:00", "14:00", value=45)
+    instance, store = coordinator([dhw])
+    store.set_baseline(dhw["id"], {MODE_COMMAND: 0, "SetDHWTemp": 48})
+    instance.hp_state = {
+        POWER_FEEDBACK: "1",
+        MODE_FEEDBACK: "3",
+        "main/DHW_Target_Temp": "45",
+    }
+
+    evaluate(instance, datetime(2026, 7, 14, 13, 0))
+
+    assert store.get_baseline(dhw["id"]) == {MODE_COMMAND: 0, "SetDHWTemp": 48}
+    assert (MODE_COMMAND, 0) not in queued_commands(instance)

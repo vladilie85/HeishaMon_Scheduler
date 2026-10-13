@@ -26,6 +26,10 @@ class ActiveBlocksSensor(SensorEntity):
 
     _attr_has_entity_name = True
     _attr_icon = "mdi:calendar-clock"
+    # Diagnostics change with every command; keep them out of the recorder
+    _unrecorded_attributes = frozenset(
+        {"last_commands", "pending_commands", "heat_pump_feedback"}
+    )
 
     def __init__(self, coordinator: ScheduleCoordinator) -> None:
         self._coordinator = coordinator

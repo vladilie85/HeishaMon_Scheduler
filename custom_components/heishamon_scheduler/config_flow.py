@@ -16,6 +16,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
 
 from .const import DEFAULT_MQTT_BASE, DOMAIN
+from .validation import normalize_mqtt_base_topic, valid_mqtt_base_topic
 
 
 class HeishaMonSchedulerConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -34,10 +35,13 @@ class HeishaMonSchedulerConfigFlow(ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(DOMAIN)
             self._abort_if_unique_id_configured()
 
-            return self.async_create_entry(
-                title="HeishaMon Scheduler",
-                data={"mqtt_base_topic": user_input["mqtt_base_topic"]},
-            )
+            base = normalize_mqtt_base_topic(user_input["mqtt_base_topic"])
+            if valid_mqtt_base_topic(base):
+                return self.async_create_entry(
+                    title="HeishaMon Scheduler",
+                    data={"mqtt_base_topic": base},
+                )
+            errors["mqtt_base_topic"] = "invalid_topic"
 
         schema = vol.Schema({
             vol.Required(
@@ -67,8 +71,17 @@ class HeishaMonSchedulerOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Manage the options."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            base = normalize_mqtt_base_topic(user_input["mqtt_base_topic"])
+            if not valid_mqtt_base_topic(base):
+                errors["mqtt_base_topic"] = "invalid_topic"
+            elif user_input["heat_request_min"] >= user_input["heat_request_max"]:
+                errors["heat_request_max"] = "min_not_below_max"
+            else:
+                return self.async_create_entry(
+                    title="", data={**user_input, "mqtt_base_topic": base}
+                )
 
         entry = self.config_entry
         current_base = entry.options.get(
@@ -90,4 +103,6 @@ class HeishaMonSchedulerOptionsFlow(OptionsFlow):
             ): vol.All(vol.Coerce(int), vol.Range(min=5, max=75)),
         })
 
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(
+            step_id="init", data_schema=schema, errors=errors
+        )
